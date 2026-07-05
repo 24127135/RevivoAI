@@ -112,3 +112,56 @@ def render_diff_table(rows: list[DiffRow]) -> str:
     out.append("</table></div>")
     out.append('</div>')
     return "".join(out)
+
+# --- LANGGRAPH STATE MACHINE TRACKER ---
+def render_langgraph_status(current_node: str) -> str:
+    """
+    Renders a visual horizontal state machine tracker for LangGraph nodes.
+    Nodes: 'analyze', 'propose', 'execute', 'evaluate'
+    """
+    nodes = [
+        {"id": "analyze", "label": "Analyze"},
+        {"id": "propose", "label": "Propose"},
+        {"id": "execute", "label": "Execute"},
+        {"id": "evaluate", "label": "Evaluate"}
+    ]
+    
+    current_idx = next((i for i, n in enumerate(nodes) if n["id"] == current_node), -1)
+    if current_idx == -1: current_idx = 4 # if none match or done, all completed
+    
+    html_out = ['<div class="langgraph-tracker">']
+    
+    for i, node in enumerate(nodes):
+        if i < current_idx:
+            state_cls = "completed"
+            icon = "✓ "
+        elif i == current_idx:
+            state_cls = "active"
+            icon = "⚙ "
+        else:
+            state_cls = "pending"
+            icon = ""
+            
+        html_out.append(f'<div class="lg-node {state_cls}">{icon}{node["label"]}</div>')
+        
+        # Add connecting arrow if not the last node
+        if i < len(nodes) - 1:
+            arrow_cls = "completed" if i < current_idx else "pending"
+            html_out.append(f'<div class="lg-arrow {arrow_cls}"></div>')
+            
+    html_out.append('</div>')
+    return "".join(html_out)
+
+
+# --- DOCKER TERMINAL LOGS ---
+def render_terminal_logs(logs: list[tuple[str, str]]) -> str:
+    """
+    Renders terminal logs. logs is a list of tuples (log_level, log_message)
+    log_level can be: 'info', 'warn', 'error', 'success', or 'default'
+    """
+    html_out = ['<div class="docker-terminal">']
+    for level, msg in logs:
+        css_class = f"term-{level}" if level in ["info", "warn", "error", "success"] else "term-line"
+        html_out.append(f'<p class="term-line {css_class}">{html.escape(msg)}</p>')
+    html_out.append('</div>')
+    return "".join(html_out)

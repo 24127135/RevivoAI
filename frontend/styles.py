@@ -803,5 +803,114 @@ div[class*="st-key-welcome_card_"]:hover .welcome-import-card {{
     background-image: radial-gradient(circle, rgba(16,16,16,0.16) 1.5px, transparent 1.5px) !important;
     background-size: 14px 14px !important;
 }}
+
+/* 
+====================================================================
+9. LANGGRAPH STATE MACHINE TRACKER
+==================================================================== 
+*/
+.langgraph-tracker {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    background: var(--neo-white);
+    border: 3px solid var(--neo-black);
+    box-shadow: 6px 6px 0px 0px var(--neo-black);
+    margin-bottom: 24px;
+    font-family: 'Space Grotesk', sans-serif;
+    gap: 12px;
+}}
+.lg-node {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 900;
+    text-transform: uppercase;
+    font-size: 0.95rem;
+    padding: 8px 16px;
+    border: 3px solid var(--neo-black);
+    background: var(--neo-white);
+    color: var(--neo-black);
+    position: relative;
+    z-index: 2;
+    flex: 1;
+    text-align: center;
+}}
+.lg-node.active {{
+    background: var(--neo-yellow);
+    box-shadow: 3px 3px 0px 0px var(--neo-black);
+    transform: translate(-1px, -1px);
+}}
+.lg-node.completed {{
+    background: var(--neo-green);
+    color: var(--neo-black);
+}}
+.lg-node.pending {{
+    background: #f0f0f0;
+    color: #999;
+    border-color: #999;
+}}
+.lg-arrow {{
+    width: 24px;
+    height: 4px;
+    background: var(--neo-black);
+    position: relative;
+    z-index: 1;
+    flex-shrink: 0;
+}}
+.lg-arrow::after {{
+    content: '';
+    position: absolute;
+    right: -6px;
+    top: -5px;
+    border-top: 7px solid transparent;
+    border-bottom: 7px solid transparent;
+    border-left: 8px solid var(--neo-black);
+}}
+.lg-arrow.pending {{
+    background: #999;
+}}
+.lg-arrow.pending::after {{
+    border-left-color: #999;
+}}
+
+/* 
+====================================================================
+10. DOCKER TERMINAL UI
+==================================================================== 
+*/
+.docker-terminal {{
+    background-color: #1e1e1e;
+    color: #fdfbf7;
+    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace !important;
+    font-size: 0.9rem;
+    padding: 16px;
+    border: 3px solid var(--neo-black);
+    box-shadow: 6px 6px 0px 0px var(--neo-black);
+    margin-top: 16px;
+    height: 350px;
+    overflow-y: auto;
+    line-height: 1.5;
+    position: relative;
+}}
+.docker-terminal .term-line {{
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+}}
+.docker-terminal .term-error {{
+    color: var(--neo-red);
+    font-weight: bold;
+}}
+.docker-terminal .term-warn {{
+    color: var(--neo-yellow);
+}}
+.docker-terminal .term-info {{
+    color: var(--neo-blue);
+}}
+.docker-terminal .term-success {{
+    color: var(--neo-green);
+}}
 </style>
 """

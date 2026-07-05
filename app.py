@@ -13,7 +13,7 @@ from backend.import_utils import import_from_streamlit_uploads, import_local_pro
 
 # Import from frontend
 from frontend.styles import get_css
-from frontend.components import render_diff_table
+from frontend.components import render_diff_table, render_langgraph_status, render_terminal_logs
 
 st.set_page_config(page_title="RevivoAI", page_icon="🔬", layout="wide")
 st.markdown(get_css(pygments_style_defs()), unsafe_allow_html=True)
@@ -518,54 +518,75 @@ elif f.status == FileStatus.TRANSLATING:
     phases = TRANSLATING_PHASES.get(f.persona, TRANSLATING_PHASES["general"])
     placeholder = st.empty()
     
-    # Loop through the steps to animate the checklist + spinner
     for i in range(len(phases) + 1):
-        rows_html = []
-        for j, p in enumerate(phases):
-            if j < i: rows_html.append(f'<div class="thinking-step step-done" style="color: var(--neo-black); font-weight: 900;"><span class="step-icon">·</span>{html.escape(p)}</div>')
-            elif j == i: rows_html.append(f'<div class="thinking-step step-active"><span class="step-icon">▸</span>{html.escape(p)}</div>')
-            else: rows_html.append(f'<div class="thinking-step step-pending"><span class="step-icon">·</span>{html.escape(p)}</div>')
-            
+        current_node = "analyze" if i < len(phases) / 2 else "propose"
+        
         with placeholder.container():
+            st.markdown(render_langgraph_status(current_node), unsafe_allow_html=True)
+            
+            rows_html = []
+            for j, p in enumerate(phases):
+                if j < i: rows_html.append(f'<div class="thinking-step step-done" style="color: var(--neo-black); font-weight: 900;"><span class="step-icon">·</span>{html.escape(p)}</div>')
+                elif j == i: rows_html.append(f'<div class="thinking-step step-active"><span class="step-icon">▸</span>{html.escape(p)}</div>')
+                else: rows_html.append(f'<div class="thinking-step step-pending"><span class="step-icon">·</span>{html.escape(p)}</div>')
+            
             st.markdown(
                 f'<div class="neo-card neo-card-spotlight">'
                 f'<div class="neo-card-header"><div class="header-left"><div class="neo-card-title-group"><span class="num-badge">02</span> 🔄 GENERATING PATCH (U001 & U002)</div><div class="header-desc">LLM is parsing legacy code and writing modern replacement.</div></div><div class="stat-pill yellow">TRANSLATING</div></div>'
                 f'<div style="padding:16px 0;">{"".join(rows_html)}</div>'
                 f'</div>', unsafe_allow_html=True
             )
-            # Show the Streamlit loading circle at the bottom
-            if i < len(phases):
-                with st.spinner(f"Executing: {phases[i]}..."):
-                    time.sleep(1.2) # Wait 1.2 seconds per step
-                    
+            
+        if i < len(phases):
+            time.sleep(1.2)
+            
     transition_to_sandbox(active_id)
     st.rerun()
 
 elif f.status == FileStatus.SANDBOX_TESTING:
     skip_to_action_bar = True
-    phases = SANDBOX_PHASES
     placeholder = st.empty()
     
-    # Loop through the steps to animate the checklist + spinner
-    for i in range(len(phases) + 1):
-        rows_html = []
-        for j, p in enumerate(phases):
-            if j < i: rows_html.append(f'<div class="thinking-step step-done" style="color: var(--neo-black); font-weight: 900;"><span class="step-icon">·</span>{html.escape(p)}</div>')
-            elif j == i: rows_html.append(f'<div class="thinking-step step-active"><span class="step-icon">▸</span>{html.escape(p)}</div>')
-            else: rows_html.append(f'<div class="thinking-step step-pending"><span class="step-icon">·</span>{html.escape(p)}</div>')
-            
+    mock_logs = [
+        ("info", "Invoking Docker Engine API (FR-3.1)..."),
+        ("info", "Instantiating ephemeral, non-root container (NFR-SEC-04)..."),
+        ("info", "Mounting MCP-bounded workspace volume (read/write scoped)..."),
+        ("warn", "Starting execution of script against provided test cases..."),
+    ]
+    
+    trace_lines = []
+    if f.target_status == FileStatus.FAILED or f.target_traceback:
+        for line in (f.target_traceback or "Traceback: unknown error").strip().split('\n'):
+            trace_lines.append(("error", line))
+    elif f.raw_traceback:
+        for line in f.raw_traceback.strip().split('\n'):
+            trace_lines.append(("error", line))
+    else:
+        trace_lines.append(("success", "Execution completed successfully. Exit code 0."))
+    
+    mock_logs.extend(trace_lines)
+    
+    current_logs = []
+    for i in range(len(mock_logs) + 1):
+        # We consider it "evaluate" phase once the logs start outputting the test results/traceback.
+        # This roughly starts at index 4 (after the setup logs)
+        current_node = "execute" if i <= 4 else "evaluate"
+        
         with placeholder.container():
+            st.markdown(render_langgraph_status(current_node), unsafe_allow_html=True)
+            
             st.markdown(
                 f'<div class="neo-card neo-card-spotlight">'
                 f'<div class="neo-card-header"><div class="header-left"><div class="neo-card-title-group"><span class="num-badge">03</span> ⏳ SANDBOX EXECUTION (U003)</div><div class="header-desc">Executing containerized test suite against generated patch.</div></div><div class="stat-pill yellow">SANDBOX</div></div>'
-                f'<div style="padding:16px 0;">{"".join(rows_html)}</div>'
+                f'{render_terminal_logs(current_logs)}'
                 f'</div>', unsafe_allow_html=True
             )
-            # Show the Streamlit loading circle at the bottom
-            if i < len(phases):
-                with st.spinner(f"Executing: {phases[i]}..."):
-                    time.sleep(1.0) # Wait 1 second per step
-                    
+            
+        if i < len(mock_logs):
+            current_logs.append(mock_logs[i])
+            time.sleep(0.6)
+            
+    time.sleep(0.5)
     resolve_sandbox_now(active_id)
     st.rerun()
 
