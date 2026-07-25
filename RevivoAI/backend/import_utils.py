@@ -10,15 +10,15 @@ def _guess_lang(filename: str) -> str:
     if ext in ["r", "rmd"]: return "r"
     return "python" # Default fallback
 
-def import_from_streamlit_uploads(uploaded_files: List[Any]) -> List[ProjectFile]:
-    """Takes files uploaded via Streamlit's UI and converts them to our data model."""
+def import_from_uploads(upload_events: List[Any]) -> List[ProjectFile]:
+    """Takes files uploaded via NiceGUI's ui.upload and converts them to our data model."""
     files = []
-    for uf in uploaded_files:
-        # Decode bytes to string, ignoring binary garble
-        content = uf.read().decode("utf-8", errors="replace")
+    for uf in upload_events:
+        # NiceGUI's upload event has a content attribute which is a file-like object
+        content = uf.content.read().decode("utf-8", errors="replace")
         files.append(ProjectFile(
             file_id=f"f_{uuid.uuid4().hex[:8]}",
-            path=uf.name,  # st.file_uploader just gives the filename, which is fine here
+            path=uf.name,
             legacy_source=content,
             ai_source="",  # AI hasn't processed it yet
             status=FileStatus.QUEUED, # Starts in the queue!

@@ -33,16 +33,15 @@ Since RevivoAI is built with Streamlit, it does not need to be compiled. It runs
    * **Windows:** `.venv\Scripts\activate`
    * **Mac/Linux:** `source .venv/bin/activate`
 
-4. **Install the dependencies:**
+4. **Install Dependencies**
    ```bash
-   pip install -r requirements.txt
+   poetry install
    ```
-
-5. **Run the Application:**
+4. **Run the Application**
    ```bash
-   streamlit run app.py
+   poetry run python app.py
    ```
-   *Streamlit will automatically compile the UI and open the application in your default web browser at `http://localhost:8501`.*
+   *NiceGUI will automatically open the application in your default web browser.*
 
 ---
 

@@ -6,17 +6,19 @@ def get_css(pygments_css: str) -> str:
 THE GLOBAL OVERRIDE (Force Streamlit containers to left-align)
 ==================================================================== 
 */
-div[data-testid="stSidebar"], 
-div[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {{
-    text-align: left !important;
-    align-items: flex-start !important;
-    padding-left: 0 !important;
+.q-drawer {{
+    border-right: 3px solid var(--neo-black) !important;
+    background-color: white !important;
 }}
 
-/* Remove default horizontal padding on the sidebar itself */
-section[data-testid="stSidebar"] .block-container {{
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
+/* Override default notification bubble for custom HTML alerts */
+.q-notification {{
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}}
+.q-notification__message {{
+    padding: 0 !important;
 }}
 
 /* Folder Header Custom Button */
@@ -80,7 +82,7 @@ NEOBRUTALISM DESIGN SYSTEM - BASE VARIABLES
 }}
 
 /* Base App Overrides */
-.stApp {{
+body {{
     background-color: var(--neo-bg) !important;
     background-image: radial-gradient(circle, rgba(16,16,16,0.07) 1px, transparent 1.4px);
     background-size: 10px 10px;
@@ -93,19 +95,6 @@ h1, h2, h3, h4, h5, h6 {{
     font-weight: 900 !important;
     text-transform: uppercase !important;
     letter-spacing: -0.01em !important;
-}}
-
-.block-container {{ 
-    padding-top: 4rem !important; 
-    padding-bottom: 2rem !important; 
-    max-width: 100% !important; 
-    background-color: var(--neo-bg) !important;
-    background-image: radial-gradient(circle, rgba(16,16,16,0.07) 1px, transparent 1.4px);
-    background-size: 10px 10px;
-}}
-
-[data-testid="stHeader"] {{
-    background-color: var(--neo-bg) !important;
 }}
 
 /* 
@@ -148,7 +137,144 @@ h1, h2, h3, h4, h5, h6 {{
     background: var(--neo-white) !important;
 }}
 
+.neo-card-header.compact-header {{
+    padding: 8px 16px !important;
+}}
+.compact-header .neo-card-title-group {{
+    font-size: 1rem !important;
+}}
+.compact-header .header-desc {{
+    font-size: 0.72rem !important;
+    margin-top: 2px !important;
+    margin-left: 0 !important;
+}}
+.compact-header .stat-pill {{
+    font-size: 0.65rem !important;
+    padding: 3px 10px !important;
+    margin-left: 8px !important;
+}}
+.neo-card-header.bleed.compact-header {{
+    margin-top: 0 !important;
+}}
+
 /* Global padding overrides for specific inline styles embedded in the template */
+
+/* 
+====================================================================
+1.5 DIFF VIEWER STYLES
+==================================================================== 
+*/
+.diff-scroll {{
+    background: #0d1117; /* GitHub dark background */
+    color: #c9d1d9;
+    overflow-x: auto;
+    width: 100%;
+}}
+
+.diff-split-table, .diff-unified-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.4;
+}}
+
+.diff-split-table td, .diff-unified-table td {{
+    padding: 0 4px;
+    vertical-align: top;
+}}
+
+.ln-col {{
+    width: 40px;
+    min-width: 40px;
+    text-align: right;
+    color: #6e7681;
+    user-select: none;
+    border-right: 1px solid #30363d;
+    padding-right: 8px !important;
+    background: #161b22;
+}}
+
+.marker-col {{
+    width: 20px;
+    min-width: 20px;
+    text-align: center;
+    user-select: none;
+    color: #6e7681;
+}}
+
+.code-col {{
+    white-space: pre-wrap;
+    word-break: break-all;
+}}
+
+.diff-row-add .code-col, .added-side {{
+    background-color: rgba(46, 160, 67, 0.35);
+    border-left: 3px solid #2ea043;
+}}
+.diff-row-add .marker-col {{ color: #2ea043; font-weight: 900; }}
+
+.diff-row-remove .code-col, .removed-side {{
+    background-color: rgba(248, 81, 73, 0.35);
+    border-left: 3px solid #f85149;
+}}
+.diff-row-remove .marker-col {{ color: #f85149; font-weight: 900; }}
+
+.ln-col.added-side {{
+    background-color: rgba(46, 160, 67, 0.35);
+    border-left: none;
+}}
+.ln-col.removed-side {{
+    background-color: rgba(248, 81, 73, 0.35);
+    border-left: none;
+}}
+
+.modified-side {{
+    background-color: rgba(245, 197, 24, 0.35);
+    border-left: 3px solid #f5c518;
+}}
+.ln-col.modified-side {{
+    background-color: rgba(245, 197, 24, 0.35);
+    border-left: none;
+}}
+
+.diff-char-added {{
+    background-color: #2ea043;
+    color: #ffffff;
+    border-radius: 2px;
+    padding: 0 1px;
+    font-weight: 700;
+}}
+.diff-char-removed {{
+    background-color: #f85149;
+    color: #ffffff;
+    border-radius: 2px;
+    padding: 0 1px;
+    font-weight: 700;
+}}
+
+.filler-cell {{
+    background-color: #0d1117; /* Same as default bg */
+}}
+
+.fold-row {{
+    text-align: center;
+    background-color: #161b22;
+    color: #8b949e;
+    padding: 4px 0 !important;
+    user-select: none;
+}}
+
+.amber-primary {{
+    background-color: rgba(210, 153, 34, 0.4);
+    display: inline-block;
+    width: 100%;
+}}
+.amber-related {{
+    background-color: rgba(210, 153, 34, 0.15);
+    display: inline-block;
+    width: 100%;
+}}
 .neo-card > div[style*="padding:16px"] {{ padding: 32px !important; }}
 .neo-card > div[style*="padding:16px 0"] {{ padding: 32px 0 !important; }}
 
@@ -194,7 +320,6 @@ h1, h2, h3, h4, h5, h6 {{
     font-weight: 900;
     font-size: 1.4rem !important;
     margin-right: 16px !important;
-    box-shadow: 3px 3px 0px 0px var(--neo-black) !important; /* HARD UNBLURRED SHADOW */
     color: var(--neo-black);
     font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace !important; /* MONOSPACE LAYER */
 }}
@@ -203,7 +328,6 @@ h1, h2, h3, h4, h5, h6 {{
     font-size: 0.9rem !important;
     padding: 6px 16px !important;
     border: 3px solid var(--neo-black) !important; /* THICK BORDER */
-    box-shadow: 3px 3px 0px 0px var(--neo-black) !important; /* HARD UNBLURRED SHADOW */
     border-radius: 6px;
     display: inline-flex;
     align-items: center;
@@ -259,14 +383,12 @@ h1, h2, h3, h4, h5, h6 {{
     color: var(--neo-white); 
     border: 2px solid var(--neo-black);
     padding: 2px 6px;
-    box-shadow: 2px 2px 0px 0px var(--neo-black);
     font-weight: 900; 
     font-size: 0.75rem;
     margin-left: 12px;
     font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', Consolas, monospace !important;
 }}
-
-.stButton > button {{
+.q-btn {{
     border: 3px solid var(--neo-black) !important; /* THICK BORDER */
     border-radius: 0px !important;
     box-shadow: 3px 3px 0px 0px var(--neo-black) !important; /* REDUCED HARD SHADOW */
@@ -276,47 +398,45 @@ h1, h2, h3, h4, h5, h6 {{
     background-color: var(--neo-white) !important;
     transition: transform 0.1s, box-shadow 0.1s !important;
 }}
-.stButton > button:hover {{
+.q-btn:hover {{
     transform: translate(1px, 1px) !important;
     box-shadow: 2px 2px 0px 0px var(--neo-black) !important;
 }}
-.stButton > button:active {{
+.q-btn:active {{
     transform: translate(3px, 3px) !important;
     box-shadow: 0px 0px 0px 0px var(--neo-black) !important;
 }}
-.stButton > button[kind="primary"] {{
+.q-btn.bg-primary, .q-btn.bg-info {{
     background-color: var(--neo-blue) !important;
     color: var(--neo-black) !important;
 }}
-
-/* Action Center — semantic color ONLY when clickable; disabled always wins as grey */
-.st-key-action_bar .stButton > button {{
+.action-bar-container .q-btn {{
     color: var(--neo-white) !important;
     font-size: 1.05rem !important;
     font-weight: 900 !important;
     letter-spacing: 0.03em !important;
 }}
-.st-key-action_bar div[class*="st-key-approve__"] button:not(:disabled) {{
+.action-bar-container .bg-positive:not(:disabled) {{
     background-color: var(--neo-green) !important;
     color: var(--neo-white) !important;
 }}
-.st-key-action_bar div[class*="st-key-action_bar_retest__"] button:not(:disabled) {{
+.action-bar-container .bg-primary:not(:disabled) {{
     background-color: var(--neo-blue) !important;
     color: var(--neo-white) !important;
 }}
-.st-key-action_bar div[class*="st-key-reject_btn__"] button:not(:disabled) {{
+.action-bar-container .bg-negative:not(:disabled) {{
     background-color: var(--neo-red) !important;
     color: var(--neo-white) !important;
 }}
-.st-key-action_bar .stButton > button:disabled {{
+.action-bar-container .q-btn:disabled {{
     background-color: #e0e0e0 !important;
     border-color: #b0b0b0 !important;
     box-shadow: none !important;
     color: #999 !important;
     cursor: not-allowed !important;
 }}
-/* Reject confirmation button (outside action bar, in the rejection-note section) */
-div[class*="st-key-confirm_reject__"] button[kind="primary"] {{
+/* Reject confirmation button */
+.reject-confirm-btn {{
     background-color: var(--neo-red) !important;
     color: var(--neo-white) !important;
 }}
@@ -333,20 +453,14 @@ div[class*="st-key-confirm_reject__"] button[kind="primary"] {{
     margin-bottom: var(--space-4) !important;
     overflow: hidden !important;
 }}
-.st-key-action_bar {{
+.action-bar-container {{
     background: var(--neo-bg) !important;
     border: var(--neo-border) !important;
     box-shadow: 3px 3px 0px 0px var(--neo-black) !important;
-    position: sticky;
-    bottom: 1rem;
-    z-index: 999;
     margin-top: var(--space-3);
-    margin-bottom: 0 !important;
     padding: var(--space-3) !important;
     overflow: hidden !important;
-}}
-.st-key-action_bar > div {{
-    width: 100% !important;
+    border-radius: 8px !important;
 }}
 
 /* 
@@ -373,7 +487,7 @@ tr.diff-row:hover td.code-col {{ filter: brightness(0.95); }}
 
 {pygments_css}
 
-.trace-frame-row {{ font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', "SF Mono", Consolas, monospace; font-size: 0.85rem; padding: 6px 10px; border: var(--neo-border); background: var(--neo-yellow); color: var(--neo-black); font-weight: bold; margin-bottom: 8px; box-shadow: 3px 3px 0px 0px var(--neo-black); }}
+.trace-frame-row {{ font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', "SF Mono", Consolas, monospace; font-size: 0.85rem; padding: 8px 12px; border-left: 4px solid var(--neo-black); background: rgba(245, 197, 24, 0.35); color: var(--neo-black); font-weight: bold; margin-bottom: 8px; border-radius: 2px; }}
 .trace-noise-row {{ color: #555; font-size: 0.8rem; font-style: italic; padding: 2px 8px; }}
 .truncation-banner {{ background: var(--neo-yellow); border: var(--neo-border); padding: 16px 24px !important; font-size: 0.95rem; font-weight: 900; margin-bottom: 32px; box-shadow: var(--neo-shadow); }}
 .feedback-banner {{ background: var(--neo-white); border: var(--neo-border); padding: 32px !important; margin-bottom: 32px !important; font-size: 0.95rem; font-weight: bold; box-shadow: var(--neo-shadow); }}
@@ -383,7 +497,7 @@ tr.diff-row:hover td.code-col {{ filter: brightness(0.95); }}
 5. MANUAL EDIT MODE OVERRIDES
 ==================================================================== 
 */
-.stTextArea textarea {{
+.q-textarea .q-field__native {{
     border: var(--neo-border) !important;
     border-radius: 0px !important;
     box-shadow: 3px 3px 0px 0px var(--neo-black) !important;
@@ -393,7 +507,7 @@ tr.diff-row:hover td.code-col {{ filter: brightness(0.95); }}
     padding: 12px !important;
     transition: transform 0.1s, box-shadow 0.1s !important;
 }}
-.stTextArea textarea:focus {{
+.q-textarea .q-field__native:focus {{
     transform: translate(1px, 1px) !important;
     box-shadow: 2px 2px 0px 0px var(--neo-black) !important;
     outline: none !important;
@@ -402,6 +516,22 @@ tr.diff-row:hover td.code-col {{ filter: brightness(0.95); }}
     border: var(--neo-border) !important;
     border-radius: 0px !important;
     box-shadow: 3px 3px 0px 0px var(--neo-black) !important;
+}}
+
+.pane-label {{
+    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace !important;
+    font-size: 0.72rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #555;
+    margin-bottom: 8px;
+}}
+.pane-code-frame {{
+    border: 3px solid var(--neo-black);
+    max-height: 460px;
+    overflow: auto;
+    background: #ffffff;
 }}
 
 /* 
@@ -452,7 +582,6 @@ tr.diff-row:hover td.code-col {{ filter: brightness(0.95); }}
     letter-spacing: 0.03em;
     padding: 3px 10px;
     border: 3px solid var(--neo-black);
-    box-shadow: 3px 3px 0px 0px var(--neo-black);
     background: var(--neo-white);
     margin-left: 10px;
 }}
@@ -511,57 +640,24 @@ section[data-testid="stSidebar"],
     font-size: 1.5rem;
     letter-spacing: 0.01em;
     border: 3px solid var(--neo-black);
-    box-shadow: 4px 4px 0px 0px var(--neo-black);
     padding: var(--space-1) var(--space-2);
     margin-bottom: var(--space-2);
     width: fit-content;
 }}
 
 /* Visual hierarchy: search/filter labels are lower priority than brand & filenames */
-[data-testid="stSidebar"] .stTextInput input,
-[data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] {{
+.q-drawer .q-field__native {{
     font-weight: 400 !important;
     font-size: 0.85rem !important;
 }}
 
-[data-testid="stSidebar"] .stToggle label p {{
+.q-drawer .q-toggle__label {{
     font-weight: 700 !important;
     font-size: 0.85rem !important;
 }}
 
-/* 2. Make the container relative so the button can float over it */
-div[class*="st-key-folder_header_"] {{
-    position: relative !important;
-}}
-
-/* 3. Pull the button's wrapper completely out of the page layout to fix the gap */
-div[class*="st-key-folder_header_"] > div:nth-child(2) {{
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    z-index: 999 !important;
-}}
-
-/* 4. Make the button invisible and stretch it */
-div[class*="st-key-folder_header_"] div[data-testid="stButton"] button {{
-    width: 100% !important;
-    height: 100% !important;
-    opacity: 0 !important; /* Fully invisible */
-    cursor: pointer !important;
-    background: transparent !important;
-    border: none !important;
-    margin: 0 !important;
-}}
-
-/* 5. Add the hover effect back to the HTML when hovered */
-div[class*="st-key-folder_header_"]:hover .sidebar-folder {{
-    color: var(--neo-pink);
-}}
-
 /* Flatten and Left-Align all standard sidebar buttons (The Files) */
-[data-testid="stSidebar"] .stButton > button {{
+.q-drawer .q-btn {{
     display: flex !important;
     font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace !important;
     text-align: left !important;
@@ -581,25 +677,13 @@ div[class*="st-key-folder_header_"]:hover .sidebar-folder {{
     padding-left: 18px !important;
 }}
 
-[data-testid="stSidebar"] .stButton > button div,
-[data-testid="stSidebar"] .stButton > button p,
-[data-testid="stSidebar"] .stButton > button span {{
-    text-align: left !important;
+.q-drawer .q-btn .q-btn__content {{
     justify-content: flex-start !important;
     width: 100% !important;
 }}
 
-/* Target the tiny folder expansion toggle specifically (Column 1) */
-[data-testid="stSidebar"] [data-testid="column"]:first-child .stButton > button {{
-    padding-left: 0px !important;
-    padding-right: 0px !important;
-    font-size: 1em !important;
-    color: #777 !important;
-    border: none !important; /* No border for the tiny arrow */
-}}
-
 /* Hover State (Grey bg, no shadow) */
-[data-testid="stSidebar"] .stButton > button:hover {{
+.q-drawer .q-btn:hover {{
     background-color: #efefef !important;
     border-color: transparent !important;
     transform: none !important;
@@ -607,8 +691,7 @@ div[class*="st-key-folder_header_"]:hover .sidebar-folder {{
 }}
 
 /* 🌟 Active/Selected State (Pink bg, Black Border, Hard Shadow) 🌟 */
-[data-testid="stSidebar"] div[data-testid="stButton"] > button[kind="primary"],
-[data-testid="stSidebar"] div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {{
+.q-drawer .q-btn.bg-primary {{
     background-color: var(--neo-pink) !important;
     border: 3px solid var(--neo-black) !important; /* The bold black border */
     box-shadow: 3px 3px 0px 0px var(--neo-black) !important; /* The hard shadow */
@@ -616,40 +699,11 @@ div[class*="st-key-folder_header_"]:hover .sidebar-folder {{
     color: var(--neo-black) !important;
 }}
 
-/* Keep the shadow and border intact when hovering over the active item */
-[data-testid="stSidebar"] div[data-testid="stButton"] > button[kind="primary"]:hover,
-[data-testid="stSidebar"] div[data-testid="stButton"] > button[data-testid="baseButton-primary"]:hover {{
+.q-drawer .q-btn.bg-primary:hover {{
     filter: brightness(0.95) !important;
     border: 3px solid var(--neo-black) !important;
     box-shadow: 3px 3px 0px 0px var(--neo-black) !important;
     transform: translate(-1px, -1px) !important;
-}}
-
-/* Highlight the entire folder block (Header + Files) */
-div[class*="st-key-folder_group_"] {{
-    background-color: var(--neo-bg) !important;
-    border: 3px solid var(--neo-black) !important; /* Keeps the Neobrutalism theme */
-    padding: 0px 8px 22px 8px !important;
-    margin-bottom: 10px !important;
-}}
-
-/* Decoupled Selection & Toggles Alignment */
-[data-testid="stSidebar"] .stToggle {{
-    padding-left: 0 !important;
-}}
-[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] {{
-    gap: 0rem !important;
-    align-items: center;
-}}
-[data-testid="stSidebar"] [data-testid="column"] {{
-    min-width: max-content !important; 
-    padding: 0 !important;
-    display: flex;
-    align-items: center;
-}}
-[data-testid="stSidebar"] .stCheckbox {{
-    margin-top: 4px;
-    margin-left: 8px;
 }}
 
 /* 
@@ -730,78 +784,13 @@ div[class*="st-key-folder_group_"] {{
     text-transform: uppercase;
 }}
 
-/* 
-====================================================================
-THE SIDEBAR FOLDER OVERLAY TRICK FOR WELCOME CARDS
-==================================================================== 
-*/
-/* 1. Make the container relative so the button can float over it */
-div[class*="st-key-welcome_card_"] {{
-    position: relative !important;
-    cursor: pointer;
-}}
-
-/* 2. Expand the button wrapper slightly outward to cover the 4px border and 6px shadow */
-div[class*="st-key-welcome_card_"] > div:nth-child(2) {{
-    position: absolute !important;
-    top: -6px !important;
-    left: -6px !important;
-    right: -12px !important; /* Reach out over the shadow */
-    bottom: -12px !important; /* Reach out over the shadow */
-    width: auto !important;
-    height: auto !important;
-    z-index: 999 !important;
-}}
-
-/* Force all intermediate Streamlit divs inside the button to stretch fully */
-div[class*="st-key-welcome_card_"] > div:nth-child(2) div {{
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-}}
-
-/* 3. Make the button itself completely invisible but explicitly absolute-fill */
-div[class*="st-key-welcome_card_"] button {{
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    opacity: 0 !important; 
-    cursor: pointer !important;
-    background: transparent !important;
-    border: none !important;
-    margin: 0 !important;
+/* Welcome screen takeover */
+.q-page-container:has(.welcome-screen), body:has(.welcome-screen) {{
+    background-color: var(--neo-yellow) !important;
+    background-image: radial-gradient(circle, rgba(16,16,16,0.16) 1.5px, transparent 1.5px) !important;
+    background-size: 14px 14px !important;
     padding: 0 !important;
-    display: block !important;
-}}
-
-/* 4. Hover effect on the wrapper applies styling to the HTML card inside */
-div[class*="st-key-welcome_card_"]:hover .welcome-import-card {{
-    background-color: var(--neo-blue) !important;
-    transform: translate(2px, 2px) !important;
-    box-shadow: 4px 4px 0px 0px var(--neo-black) !important;
-}}
-/* Welcome screen takeover — cleaner, professional background for as long as
-   no project has been imported yet (Use Case 0). */
-.block-container:has(.welcome-screen) {{
-    background-color: var(--neo-yellow) !important;
-    background-image: radial-gradient(circle, rgba(16,16,16,0.16) 1.5px, transparent 1.5px) !important;
-    background-size: 14px 14px !important;
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-    padding-bottom: 56px !important;
     min-height: 100vh !important;
-}}
-
-/* Belt-and-suspenders: also tint the outer app shell in case viewport height
-   exceeds the block-container's own height (prevents a white gap at the bottom). */
-.stApp:has(.welcome-screen) {{
-    background-color: var(--neo-yellow) !important;
-    background-image: radial-gradient(circle, rgba(16,16,16,0.16) 1.5px, transparent 1.5px) !important;
-    background-size: 14px 14px !important;
 }}
 
 /* 
@@ -911,6 +900,64 @@ div[class*="st-key-welcome_card_"]:hover .welcome-import-card {{
 }}
 .docker-terminal .term-success {{
     color: var(--neo-green);
+}}
+
+/* 
+====================================================================
+11. ACTION CENTER PEEK & POP
+==================================================================== 
+*/
+.action-peek {{
+    transform: translateY(calc(100% - 80px));
+    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}}
+.action-peek:hover {{
+    transform: translateY(-24px);
+}}
+
+@keyframes action-float {{
+    0% {{ transform: translateY(0px) scale(1); }}
+    50% {{ transform: translateY(-6px) scale(1.04); }}
+    100% {{ transform: translateY(0px) scale(1); }}
+}}
+.animate-action-float {{
+    animation: action-float 1.2s ease-in-out infinite;
+}}
+
+
+/* Clean Action Pill Buttons */
+.action-pill-btn {{
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 9999px !important;
+    text-transform: none !important;
+}}
+.action-pill-btn:hover {{
+    transform: none !important;
+    box-shadow: none !important;
+}}
+.action-pill-btn:active {{
+    transform: scale(0.95) !important;
+    box-shadow: none !important;
+}}
+
+/* Standalone Code Viewer (Light Theme) */
+.viewer-table {{ 
+    width: 100%; border-collapse: collapse; 
+    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', "SF Mono", Consolas, monospace; 
+    font-size: 0.85rem; 
+    background-color: #ffffff;
+}}
+.viewer-table td {{ 
+    padding: 2px 8px; white-space: pre; vertical-align: top; border: none; 
+}}
+.viewer-ln-col {{ 
+    width: 42px; color: #6e7681; font-weight: bold; text-align: right; 
+    user-select: none; background: #f0f0f0; border-right: 1px solid #d0d0d0; position: sticky; left: 0;
+    padding-right: 12px;
+}}
+.viewer-code-col {{ 
+    width: 100%; color: #101010; padding-left: 16px !important; border-left: 1px solid #d0d0d0;
 }}
 </style>
 """

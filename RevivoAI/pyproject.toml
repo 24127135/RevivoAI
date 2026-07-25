@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "revivoai"
+version = "0.1.0"
+description = "Legacy code modernization tool"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [
+    {include = "backend"},
+    {include = "frontend"}
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+nicegui = ">=3.3.1"
+Pygments = ">=2.17.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

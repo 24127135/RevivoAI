@@ -55,6 +55,7 @@ class ProjectFile:
     related_error_lines: list = field(default_factory=list)
     persona: Literal["systems_engineer", "data_scientist", "general"] = "general"
     use_case: str = ""  
+    iteration: int = 0
     
     # --- NEW: Hidden target fields to mock the async workflow ---
     target_ai_source: str = ""
