@@ -3,7 +3,7 @@ def get_css(pygments_css: str) -> str:
 <style>
 /* 
 ====================================================================
-THE GLOBAL OVERRIDE (Force Streamlit containers to left-align)
+THE GLOBAL OVERRIDE (Align NiceGUI drawer and layout chrome)
 ==================================================================== 
 */
 .q-drawer {{

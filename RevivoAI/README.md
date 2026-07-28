@@ -1,23 +1,29 @@
-# RevivoAI 🔬 — UI Wireframe & Architecture Guide
+# RevivoAI 🔬 — NiceGUI Architecture Guide
 
-RevivoAI is a legacy code modernization tool that leverages AI to draft patches and an autonomous Docker sandbox to verify them. 
+RevivoAI is a legacy code modernization tool that leverages AI to draft patches and an autonomous Docker sandbox to verify them.
 
-This repository currently represents the **Frontend Wireframe and Core Architecture**. It has been intentionally structured into a decoupled Frontend/Backend pattern to ensure that the Streamlit UI remains lightweight and completely agnostic to the heavy background processing (Docker, MCP, LLMs) that will be implemented in the next phase.
+This repository currently represents the **frontend wireframe and core architecture** for a NiceGUI-based experience. The app is intentionally structured into a decoupled frontend/backend pattern so the browser UI stays lightweight while heavier background processing (Docker, MCP, LLMs, orchestration) can be added later without changing the presentation layer.
 
 ---
 
 ## ⚙️ Installation & Running the App
 
-Since RevivoAI is built with Streamlit, it does not need to be compiled. It runs directly via the Python interpreter.
+RevivoAI is built with NiceGUI and uses **Poetry** for dependency management. The app runs directly via the Python interpreter.
 
 ### Prerequisites
 * **Python 3.9+** installed on your machine.
-* **(Highly Recommended) Nerd Fonts:** To view the code blocks, tracebacks, and UI badges with the intended Neobrutalist developer aesthetic, you should have a "Nerd Font" installed on your system. 
-  * The CSS specifically looks for **JetBrainsMono Nerd Font**, **FiraCode Nerd Font**, or **Hack Nerd Font**.
-  * You can download them for free from [nerdfonts.com](https://www.nerdfonts.com/font-downloads). 
-  * *Note: If you do not have one installed, the UI will safely fall back to standard system monospace fonts (like Consolas) without breaking.*
+* **Poetry** installed on your machine.
+  * If you do not already have Poetry installed, follow the official installation guide:
+    https://python-poetry.org/docs/#installation
+  * After installation, verify it is available by running:
+    ```bash
+    poetry --versionGet-Command poetry -All
+    ```
+* **(Highly Recommended) Nerd Fonts:** To view the code blocks, tracebacks, and UI badges with the intended neobrutalist developer aesthetic, install a Nerd Font such as JetBrainsMono, FiraCode, or Hack.
+  * The CSS looks for those fonts first and will safely fall back to standard monospace fonts if they are not available.
 
 ### Setup Instructions
+Run with Administrator!
 
 1. **Clone or navigate to the repository folder:**
    ```bash
@@ -33,15 +39,18 @@ Since RevivoAI is built with Streamlit, it does not need to be compiled. It runs
    * **Windows:** `.venv\Scripts\activate`
    * **Mac/Linux:** `source .venv/bin/activate`
 
-4. **Install Dependencies**
+4. **Install project dependencies:**
+
    ```bash
    poetry install
    ```
-4. **Run the Application**
+
+5. **Run the application:**
    ```bash
    poetry run python app.py
    ```
-   *NiceGUI will automatically open the application in your default web browser.*
+
+   NiceGUI will open the application in your default web browser.
 
 ---
 
@@ -49,16 +58,16 @@ Since RevivoAI is built with Streamlit, it does not need to be compiled. It runs
 
 ```text
 .
-├── app.py                  # Main Streamlit application & routing
-├── requirements.txt        # Minimal Python dependencies
-├── backend/                # Pure Python logic (Zero Streamlit dependencies)
+├── app.py                  # Main NiceGUI application entry point and routing
+├── pyproject.toml          # Project dependencies and tooling
+├── backend/                # Pure Python logic with no UI dependencies
 │   ├── import_utils.py     # File ingestion and directory traversal
-│   ├── logic.py            # AST parsing, Traceback parsing, and Diff Engine
-│   ├── models.py           # Dataclasses, Enums, and State contracts
+│   ├── logic.py            # AST parsing, traceback parsing, and diff generation
+│   ├── models.py           # Dataclasses, enums, and state contracts
 │   └── seed.py             # Hardcoded fixtures and mock data for UI testing
-└── frontend/               # Streamlit-specific presentation layers
-    ├── components.py       # Reusable UI widgets (Loaders, Diff tables)
-    └── styles.py           # Global Neobrutalism CSS design system
+└── frontend/               # NiceGUI presentation layer
+    ├── components.py       # Reusable UI widgets, loaders, and diff views
+    └── styles.py           # Global neobrutalist CSS design system
 ```
 
 ---
@@ -66,99 +75,47 @@ Since RevivoAI is built with Streamlit, it does not need to be compiled. It runs
 ## 📄 File Dictionary
 
 ### Root
-* **`app.py`** 
-  The entry point of the application. It handles Streamlit state management (`st.session_state`), user interactions (button clicks, batch actions), and high-level control flow (e.g., routing a file from `QUEUED` ➡️ `TRANSLATING` ➡️ `SANDBOX_TESTING`). 
+* **app.py**
+  The entry point of the app. It wires together the NiceGUI UI, state management, user interactions, and high-level control flow for transitions such as `QUEUED` → `TRANSLATING` → `SANDBOX_TESTING`.
 
-### `backend/` (Data & Logic Layer)
-* **`models.py`**
-  The absolute source of truth for the app. Contains the `ProjectFile` dataclass and the `FileStatus` enum. **Rule of thumb:** The UI simply reacts to changes in `ProjectFile`. 
-* **`logic.py`**
-  The "brain" of the wireframe. Contains the `difflib` sequence matching for generating code comparisons, Pygments tokenization for syntax highlighting, and regex parsers for extracting actionable stack frames from Python/C/R tracebacks.
-* **`import_utils.py`**
-  Handles reading files from the user. Includes `import_from_streamlit_uploads` (for isolated file inputs) and `import_local_project` (for recursive OS directory tree mapping).
-* **`seed.py`**
-  Contains mock legacy code, mock AI outputs, and mock tracebacks. Used strictly for the "Load Demo Project" mode to test UI styling and transitions without needing an active LLM.
+### backend/
+* **models.py**
+  The source of truth for the app. Contains the `ProjectFile` dataclass and `FileStatus` enum. The UI reacts to changes in these objects rather than owning its own separate state model.
+* **logic.py**
+  Contains the diff engine, syntax-highlighting helpers, and traceback parsing logic used to render the review experience.
+* **import_utils.py**
+  Handles reading files from the user. Includes upload-oriented helpers and recursive directory traversal for local project imports.
+* **seed.py**
+  Contains mock legacy code, mock AI outputs, and mock tracebacks used by the demo mode.
 
-### `frontend/` (Presentation Layer)
-* **`styles.py`**
-  Contains the `get_css()` function. This encapsulates the entire **Neobrutalism Design System** (fonts, colors, hard shadows, thick borders) and targeted Streamlit DOM overrides to prevent CSS bleed in the main `app.py` file.
-* **`components.py`**
-  Contains reusable HTML/Streamlit renderers. Most notably, it houses the animated logic for the pulsing UI loading states.
+### frontend/
+* **styles.py**
+  Contains the `get_css()` function for the neobrutalist visual system and the CSS overrides used by the NiceGUI layout.
+* **components.py**
+  Holds reusable NiceGUI renderers for loaders, code viewers, and diff panels.
 
 ---
 
 ## 🚀 Futureproofing & Backend Transition Guide
 
-The codebase currently mocks the AI generation (U001/U002) and Sandbox testing (U003) using `time.sleep()` and `st.spinner()`. 
-
-Because of the decoupled architecture, transitioning to the real backend requires **zero changes to the UI presentation files (`frontend/`)**. The UI only cares about the properties inside the `ProjectFile` object.
+The current codebase mocks the AI generation and sandbox testing steps while preserving a clean separation between UI and backend concerns. Because of that decoupled architecture, adding a real backend later should require minimal changes to the presentation layer.
 
 When you are ready to begin the backend engineering phase, follow this roadmap:
 
-### Phase 1: Integrating MCP / LLMs (Replacing U001 & U002)
+### Phase 1: Integrating MCP / LLMs
 1. Create `backend/mcp_client.py`.
-2. Write a function that accepts a `ProjectFile`'s `legacy_source`, communicates with your LLM via the Model Context Protocol to understand the workspace, and returns a translated string.
-3. In `app.py`, locate the `transition_to_sandbox()` function. Replace the hardcoded mock assignment with your real function:
-   ```python
-   # BEFORE (Mock)
-   f.ai_source = "# AI Translated...\n" + f.legacy_source
-   
-   # AFTER (Real)
-   f.ai_source = mcp_client.generate_patch(f.legacy_source, context=workspace_context)
-   ```
+2. Write a function that accepts a `ProjectFile`'s `legacy_source`, communicates with your LLM through the Model Context Protocol, and returns a translated string.
+3. In `app.py`, replace the hardcoded mock assignment in the transition flow with your real function.
 
-### Phase 2: Integrating Docker (Replacing U003)
+### Phase 2: Integrating Docker
 1. Create `backend/docker_runner.py`.
-2. Write a function that takes the `ai_source`, spins up an ephemeral, non-root Docker container, mounts the workspace volume, executes the test suite, and captures `stdout`/`stderr`.
-3. In `app.py`, locate `resolve_sandbox_now()`. Replace the mock logic by feeding the real Docker output into the existing `logic.py` traceback parser:
-   ```python
-   # Real Docker Execution
-   exit_code, stderr = docker_runner.execute_tests(f.ai_source)
-   
-   if exit_code != 0:
-       f.status = FileStatus.FAILED
-       f.raw_traceback = stderr  # The UI will automatically parse and render this!
-   else:
-       f.status = FileStatus.PASSED
-   ```
+2. Write a function that takes the generated source, starts an ephemeral Docker container, executes the test suite, and captures `stdout`/`stderr`.
+3. Feed that output into the existing traceback parsing logic so the NiceGUI experience can render failures and successes consistently.
 
-### Phase 3: Asynchronous Orchestration (LangGraph / Celery)
-Currently, `app.py` uses `st.spinner()` and `time.sleep()`, which blocks the Streamlit main thread. When moving to production, LLM generation and Docker builds will take minutes, meaning the UI would completely freeze if left this way. 
+### Phase 3: Asynchronous Orchestration
+Long-running work should be moved into background workers so the NiceGUI UI stays responsive. A task queue such as Celery, Redis-backed workers, or LangGraph can drive the pipeline while the UI polls for updates or listens for state changes.
 
-To fix this, we decouple the execution from the UI using a background worker:
-
-1. **Create `backend/orchestrator.py`**
-   This file will use a task queue (like Celery, Redis, or LangGraph). It receives a file ID, runs `mcp_client` and `docker_runner` in the background, and updates a database/state store with the status.
-   
-2. **Update UI Dispatch (`app.py`)**
-   Instead of running the translation directly, the button click simply hands the job to the orchestrator and updates the UI state.
-   ```python
-   # BEFORE (Blocking)
-   transition_to_sandbox(active_id)
-   
-   # AFTER (Fire and Forget)
-   orchestrator.trigger_pipeline_async(active_id)
-   f.status = FileStatus.TRANSLATING
-   ```
-   
-3. **Update UI Polling (`app.py`)**
-   While the file is processing, the UI will just "poll" the backend database every few seconds to see if the background worker finished, keeping the UI completely responsive.
-   ```python
-   # Inside the TRANSLATING / SANDBOX_TESTING block
-   if f.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
-       
-       # Check the database to see what the background worker is doing
-       latest_backend_state = orchestrator.check_job_status(active_id)
-       
-       # If the background worker moved to the next step, update the UI!
-       if latest_backend_state.status != f.status:
-           f.status = latest_backend_state.status
-           f.ai_source = latest_backend_state.ai_source
-           f.raw_traceback = latest_backend_state.raw_traceback
-           st.rerun() 
-       
-       # If it's still working, wait 2 seconds and check again
-       else:
-           time.sleep(2)
-           st.rerun()
-   ```
+The transition pattern is:
+1. Trigger a background job from the NiceGUI action handler.
+2. Update the relevant `ProjectFile` state as the job progresses.
+3. Refresh the UI from the updated state without blocking the main event loop.
