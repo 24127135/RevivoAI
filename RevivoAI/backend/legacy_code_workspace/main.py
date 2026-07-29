@@ -1,0 +1,1 @@
+print('Hello, legacy system!')
