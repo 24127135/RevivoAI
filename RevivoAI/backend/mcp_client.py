@@ -1,75 +1,59 @@
 import os
-from pathlib import Path
+import uuid
+from enum import Enum
+from typing import List, Optional
+
+class ConnectionStatus(Enum):
+    CONNECTED = "CONNECTED"
+    DISCONNECTED = "DISCONNECTED"
+    ERROR = "ERROR"
 
 
 class MCPClient:
-    def __init__(self, allowed_root_path: str):
-        self.root_path = Path(allowed_root_path).resolve()
+    def __init__(self, server_uri: str, allowed_root_path: str, session_id: Optional[str] = None,
+                 timeout_ms: int = 5000):
+        self.__server_uri: str = server_uri
+        self.__allowed_root_path: str = allowed_root_path
+        self.__session_id: str = session_id if session_id else str(uuid.uuid4())
+        self.__connection_status: ConnectionStatus = ConnectionStatus.DISCONNECTED
+        self._timeout_ms: int = timeout_ms
 
-        if not self.root_path.exists() or not self.root_path.is_dir():
-            raise ValueError(f"Root path {self.root_path} không tồn tại hoặc không phải là thư mục.")
+    def connect(self) -> bool:
+        self.__connection_status = ConnectionStatus.CONNECTED
+        print(f"[MCPClient] Connected. Session ID: {self.__session_id}")
+        return True
 
-        self._connected = False
+    def disconnect(self) -> None:
+        self.__connection_status = ConnectionStatus.DISCONNECTED
+        print("[MCPClient] Disconnected.")
 
-    def _validatePath(self, filepath: str) -> Path:
+    def readFile(self, path: str) -> str:
+        if not self.__validatePath(path):
+            raise PermissionError(f"Security Violation: Truy cập bị từ chối!")
 
-        target_path = Path(filepath).resolve()
+        full_path = os.path.join(self.__allowed_root_path, path)
+        with open(full_path, 'r', encoding='utf-8') as f:
+            return f.read()
 
-        if not target_path.is_relative_to(self.root_path):
-            raise PermissionError(
-                f"Security Violation: Truy cập bị từ chối! Đường dẫn {filepath} nằm ngoài thư mục cho phép."
-            )
+    def writeFile(self, path: str, content: str) -> bool:
+        if not self.__validatePath(path):
+            raise PermissionError(f"Security Violation: Truy cập bị từ chối!")
 
-        return target_path
-
-    def connect(self):
-        self._connected = True
-        print(f"[MCPClient] Connected. Root path locked at: {self.root_path}")
-
-    def disconnect(self):
-        self._connected = False
-        print("[MCPClient] Disconnected. Resources freed.")
-
-    def __enter__(self):
-        self.connect()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.disconnect()
-
-    def readFile(self, filepath: str) -> str:
-        if not self._connected:
-            raise RuntimeError("MCPClient chưa được kết nối. Vui lòng gọi connect() trước.")
-
-        safe_path = self._validatePath(filepath)
-
-        if not safe_path.exists() or not safe_path.is_file():
-            raise FileNotFoundError(f"Không tìm thấy file hợp lệ tại: {safe_path}")
-
+        full_path = os.path.join(self.__allowed_root_path, path)
         try:
-            with open(safe_path, 'r', encoding='utf-8') as file:
-                return file.read()
+            # Tạo thư mục cha nếu chưa tồn tại
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return True
         except Exception as e:
-            raise IOError(f"Lỗi khi đọc file {safe_path}: {str(e)}")
+            print(f"[MCPClient] writeFile Error: {e}")
+            return False
 
-
-if __name__ == "__main__":
-    test_workspace = "./legacy_code_workspace"
-    os.makedirs(test_workspace, exist_ok=True)
-
-    valid_file = os.path.join(test_workspace, "main.py")
-    with open(valid_file, "w") as f:
-        f.write("print('Hello, legacy system!')")
-
-    print("--- Test 1: Truy cập hợp lệ & Quản lý tài nguyên ---")
-    with MCPClient(test_workspace) as client:
-        content = client.readFile(valid_file)
-        print(f"Nội dung file:\n{content}")
-
-    print("\n--- Test 2: Tấn công Directory Traversal ---")
-    try:
-        with MCPClient(test_workspace) as client:
-            malicious_path = os.path.join(test_workspace, "../mcp_client.py")
-            client.readFile(malicious_path)
-    except PermissionError as e:
-        print(f"Thành công chặn đứng tấn công: {e}")
+    def listDirectory(self, path: str) -> List[str]:
+        if not self.__validatePath(path):
+            raise PermissionError(f"Security Violation: Truy cập bị từ chối!")
+        full_path = os.path.join(self.__allowed_root_path, path)
+        if not os.path.isdir(full_path):
+            raise NotADirectoryError(f"Đường dẫn không phải là thư mục: {path}")
+        return os.listdir(full_path)
