@@ -1,6 +1,7 @@
 import os
 import uuid
 from enum import Enum
+from pathlib import Path
 from typing import List, Optional
 
 class ConnectionStatus(Enum):
@@ -26,6 +27,13 @@ class MCPClient:
     def disconnect(self) -> None:
         self.__connection_status = ConnectionStatus.DISCONNECTED
         print("[MCPClient] Disconnected.")
+
+    def __validatePath(self, path: str) -> bool:
+        root_path = Path(self.__allowed_root_path).resolve()
+        target_path = Path(os.path.join(self.__allowed_root_path, path)).resolve()
+        if not target_path.is_relative_to(root_path):
+            raise PermissionError("Security Violation: Directory traversal attempt blocked!")
+        return True
 
     def readFile(self, path: str) -> str:
         if not self.__validatePath(path):
@@ -57,3 +65,4 @@ class MCPClient:
         if not os.path.isdir(full_path):
             raise NotADirectoryError(f"Đường dẫn không phải là thư mục: {path}")
         return os.listdir(full_path)
+
