@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -14,6 +14,7 @@ class AgentState(TypedDict):
     iteration_count: int
     original_code: str
     current_code: str
+    structural_context: NotRequired[dict[str, list[str]]]
     docker_exit_code: int
     traceback_log: list[str]
 
