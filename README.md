@@ -52,6 +52,13 @@ Run with Administrator!
 
    NiceGUI will open the application in your default web browser.
 
+6. **Run the tests:**
+  ```bash
+  poetry run pytest
+  ```
+
+  This executes the backend tests under `tests/backend/`.
+
 ---
 
 ## 📂 Directory Structure
@@ -61,13 +68,20 @@ Run with Administrator!
 ├── app.py                  # Main NiceGUI application entry point and routing
 ├── pyproject.toml          # Project dependencies and tooling
 ├── backend/                # Pure Python logic with no UI dependencies
+│   ├── __init__.py         # Package marker for backend imports
 │   ├── import_utils.py     # File ingestion and directory traversal
-│   ├── logic.py            # AST parsing, traceback parsing, and diff generation
+│   ├── logic.py            # Traceback parsing and error-frame analysis
 │   ├── models.py           # Dataclasses, enums, and state contracts
+│   ├── nodes.py            # AST / structural parsing nodes for orchestration
+│   ├── orchestrator.py     # LangGraph state schema and router wrapper
+│   ├── mcp_client.py       # Local MCP-style filesystem client used by the demo
 │   └── seed.py             # Hardcoded fixtures and mock data for UI testing
 └── frontend/               # NiceGUI presentation layer
     ├── components.py       # Reusable UI widgets, loaders, and diff views
     └── styles.py           # Global neobrutalist CSS design system
+└── tests/                  # Pytest-based test suite
+    └── README.md           # Development standards and guidelines
+    └── backend/            # MCP client and AST parser coverage
 ```
 
 ---
@@ -77,16 +91,30 @@ Run with Administrator!
 ### Root
 * **app.py**
   The entry point of the app. It wires together the NiceGUI UI, state management, user interactions, and high-level control flow for transitions such as `QUEUED` → `TRANSLATING` → `SANDBOX_TESTING`.
+* **pyproject.toml**
+  Dependencies and build configuration managed by Poetry.
 
 ### backend/
 * **models.py**
   The source of truth for the app. Contains the `ProjectFile` dataclass and `FileStatus` enum. The UI reacts to changes in these objects rather than owning its own separate state model.
 * **logic.py**
-  Contains the diff engine, syntax-highlighting helpers, and traceback parsing logic used to render the review experience.
+  Contains traceback parsing and error-frame analysis logic used to render the review experience.
 * **import_utils.py**
   Handles reading files from the user. Includes upload-oriented helpers and recursive directory traversal for local project imports.
+* **nodes.py**
+  Contains the `ASTParserNode` used by the orchestration layer to inspect the current file, extract structural context, and flag parsing errors.
+* **orchestrator.py**
+  Defines the LangGraph `AgentState` schema and a minimal router wrapper for the backend workflow.
+* **mcp_client.py**
+  Provides the local MCP-style filesystem client used by the demo/test workflow.
 * **seed.py**
   Contains mock legacy code, mock AI outputs, and mock tracebacks used by the demo mode.
+
+### tests/
+* **tests/README.md**
+  Team Standards: Defines naming conventions, mocking strategies, and CI/CD readiness.
+* **tests/backend/**
+  Contains the pytest coverage for the backend pieces, including MCP client I/O and AST parser behavior.
 
 ### frontend/
 * **styles.py**
@@ -103,7 +131,7 @@ The current codebase mocks the AI generation and sandbox testing steps while pre
 When you are ready to begin the backend engineering phase, follow this roadmap:
 
 ### Phase 1: Integrating MCP / LLMs
-1. Create `backend/mcp_client.py`.
+1. Integrate `backend/mcp_client.py` with the real MCP or LLM backend.
 2. Write a function that accepts a `ProjectFile`'s `legacy_source`, communicates with your LLM through the Model Context Protocol, and returns a translated string.
 3. In `app.py`, replace the hardcoded mock assignment in the transition flow with your real function.
 
@@ -114,6 +142,8 @@ When you are ready to begin the backend engineering phase, follow this roadmap:
 
 ### Phase 3: Asynchronous Orchestration
 Long-running work should be moved into background workers so the NiceGUI UI stays responsive. A task queue such as Celery, Redis-backed workers, or LangGraph can drive the pipeline while the UI polls for updates or listens for state changes.
+
+The current orchestration state already tracks `current_file`, `current_code`, and an optional `structural_context` payload. The `ASTParserNode` updates that structural context from the selected file and marks `ui_status = PARSING_ERROR` when the file cannot be parsed as Python or R.
 
 The transition pattern is:
 1. Trigger a background job from the NiceGUI action handler.

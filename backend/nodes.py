@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -11,80 +12,102 @@ if TYPE_CHECKING:
 
 
 class ASTParserNode:
-    """Parse Python source files into a compact structural summary."""
+    """Parse source files into a compact structural summary."""
 
-    def extract_tree(self, file_path: str) -> str:
-        """Parse a Python source file and summarize its top-level structure.
+    def extract_tree(self, state: AgentState) -> dict[str, object]:
+        """Parse the current file and return a state update with structural context.
 
-        The summary includes discovered class definitions, their methods,
-        top-level function signatures, and global imports. If parsing fails,
-        a descriptive error message is returned so higher-level orchestration
-        logic can decide whether to retry.
+        The node prefers Python's ``ast`` module for Python sources, and falls
+        back to lightweight R-pattern detection when the file is an R script.
+        If neither format can be parsed, the returned update marks the state as
+        ``PARSING_ERROR``.
         """
+        file_path = state.get("current_file", "")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return {"ui_status": "PARSING_ERROR"}
+
         try:
             path = Path(file_path)
             source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(path))
-        except (FileNotFoundError, OSError, SyntaxError, UnicodeDecodeError) as exc:
-            return f"Parsing failed: {exc}"
+        except (FileNotFoundError, OSError, UnicodeDecodeError):
+            return {"ui_status": "PARSING_ERROR"}
 
-        classes: list[str] = []
+        suffix = path.suffix.lower()
+        if suffix in {".r", ".rscript"}:
+            structural_context = self._extract_r_context(source)
+            if structural_context is None:
+                return {"ui_status": "PARSING_ERROR"}
+            return {"structural_context": structural_context}
+
+        try:
+            tree = ast.parse(source, filename=str(path))
+        except SyntaxError:
+            return {"ui_status": "PARSING_ERROR"}
+
         functions: list[str] = []
+        classes: list[str] = []
         imports: list[str] = []
 
-        for node in tree.body:
+        for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                methods = [
-                    child.name
-                    for child in node.body
-                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                ]
-                classes.append(f"{node.name} (methods: {', '.join(methods) if methods else 'none'})")
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                functions.append(self._format_function_signature(node))
+                classes.append(node.name)
+            elif isinstance(node, ast.FunctionDef):
+                functions.append(node.name)
             elif isinstance(node, ast.Import):
-                imports.extend(self._format_import(node))
+                imports.extend(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
-                imports.extend(self._format_import_from(node))
+                module = self._format_import_from(node)
+                if module:
+                    imports.append(module)
 
-        sections: list[str] = []
-        if classes:
-            sections.append(f"Classes: [{', '.join(classes)}]")
-        if functions:
-            sections.append(f"Functions: [{', '.join(functions)}]")
-        if imports:
-            sections.append(f"Imports: [{', '.join(imports)}]")
+        structural_context = {
+            "current_file": str(path),
+            "functions": self._dedupe(functions),
+            "classes": self._dedupe(classes),
+            "imports": self._dedupe(imports),
+            "language": "python",
+        }
+        return {"structural_context": structural_context}
 
-        return "; ".join(sections) if sections else "No parseable structure found."
+    def _extract_r_context(self, source: str) -> dict[str, object] | None:
+        """Extract a lightweight structural summary from R source."""
+        function_names = self._dedupe(
+            match.group("name")
+            for match in re.finditer(r"(?m)^\s*(?P<name>[A-Za-z.][A-Za-z0-9._]*)\s*<-\s*function\s*\(", source)
+        )
+        class_names = self._dedupe(
+            match.group("name")
+            for match in re.finditer(r"(?m)\b(?:R6Class|setClass)\s*\(\s*['\"](?P<name>[^'\"]+)['\"]", source)
+        )
+        imports = self._dedupe(
+            match.group("name")
+            for match in re.finditer(r"(?m)\b(?:library|require)\s*\(\s*['\"]?(?P<name>[A-Za-z0-9._-]+)['\"]?\s*\)", source)
+        )
 
-    def _format_function_signature(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-        """Build a readable signature for a function or async function node."""
-        args = [arg.arg for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs]
-        if node.args.vararg:
-            args.append(f"*{node.args.vararg.arg}")
-        if node.args.kwarg:
-            args.append(f"**{node.args.kwarg.arg}")
+        if not (function_names or class_names or imports):
+            return None
 
-        return f"{node.name}({', '.join(args)})"
+        return {
+            "functions": function_names,
+            "classes": class_names,
+            "imports": imports,
+            "language": "r",
+        }
 
-    def _format_import(self, node: ast.Import) -> list[str]:
-        """Format import statements into concise strings."""
-        return [alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names]
-
-    def _format_import_from(self, node: ast.ImportFrom) -> list[str]:
-        """Format from-import statements into concise strings."""
+    def _format_import_from(self, node: ast.ImportFrom) -> str:
+        """Format a from-import statement into its module path."""
         module = node.module or ""
-        formatted: list[str] = []
-        for alias in node.names:
-            imported = alias.name
-            if alias.name != "*":
-                imported = f"{module}.{alias.name}" if module else alias.name
-            else:
-                imported = f"{module}.*" if module else "*"
-            if alias.asname:
-                imported = f"{imported} as {alias.asname}"
-            formatted.append(imported)
-        return formatted
+        if node.level:
+            module = f"{'.' * node.level}{module}"
+        return module
+
+    def _dedupe(self, values) -> list[str]:
+        """Remove duplicates while preserving order."""
+        seen: dict[str, None] = {}
+        for value in values:
+            if value and value not in seen:
+                seen[value] = None
+        return list(seen.keys())
 
 
 class LLMPatchNode:
