@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from backend.orchestrator import AgentState
+if TYPE_CHECKING:
+    from backend.orchestrator import AgentState
 
 
 class ASTParserNode:
