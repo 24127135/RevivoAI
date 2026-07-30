@@ -1,4 +1,4 @@
-def get_css(pygments_css: str) -> str:
+def get_css() -> str:
     return f"""
 <style>
 /* 
@@ -159,122 +159,7 @@ h1, h2, h3, h4, h5, h6 {{
 
 /* Global padding overrides for specific inline styles embedded in the template */
 
-/* 
-====================================================================
-1.5 DIFF VIEWER STYLES
-==================================================================== 
-*/
-.diff-scroll {{
-    background: #0d1117; /* GitHub dark background */
-    color: #c9d1d9;
-    overflow-x: auto;
-    width: 100%;
-}}
 
-.diff-split-table, .diff-unified-table {{
-    width: 100%;
-    border-collapse: collapse;
-    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace;
-    font-size: 0.85rem;
-    line-height: 1.4;
-}}
-
-.diff-split-table td, .diff-unified-table td {{
-    padding: 0 4px;
-    vertical-align: top;
-}}
-
-.ln-col {{
-    width: 40px;
-    min-width: 40px;
-    text-align: right;
-    color: #6e7681;
-    user-select: none;
-    border-right: 1px solid #30363d;
-    padding-right: 8px !important;
-    background: #161b22;
-}}
-
-.marker-col {{
-    width: 20px;
-    min-width: 20px;
-    text-align: center;
-    user-select: none;
-    color: #6e7681;
-}}
-
-.code-col {{
-    white-space: pre-wrap;
-    word-break: break-all;
-}}
-
-.diff-row-add .code-col, .added-side {{
-    background-color: rgba(46, 160, 67, 0.35);
-    border-left: 3px solid #2ea043;
-}}
-.diff-row-add .marker-col {{ color: #2ea043; font-weight: 900; }}
-
-.diff-row-remove .code-col, .removed-side {{
-    background-color: rgba(248, 81, 73, 0.35);
-    border-left: 3px solid #f85149;
-}}
-.diff-row-remove .marker-col {{ color: #f85149; font-weight: 900; }}
-
-.ln-col.added-side {{
-    background-color: rgba(46, 160, 67, 0.35);
-    border-left: none;
-}}
-.ln-col.removed-side {{
-    background-color: rgba(248, 81, 73, 0.35);
-    border-left: none;
-}}
-
-.modified-side {{
-    background-color: rgba(245, 197, 24, 0.35);
-    border-left: 3px solid #f5c518;
-}}
-.ln-col.modified-side {{
-    background-color: rgba(245, 197, 24, 0.35);
-    border-left: none;
-}}
-
-.diff-char-added {{
-    background-color: #2ea043;
-    color: #ffffff;
-    border-radius: 2px;
-    padding: 0 1px;
-    font-weight: 700;
-}}
-.diff-char-removed {{
-    background-color: #f85149;
-    color: #ffffff;
-    border-radius: 2px;
-    padding: 0 1px;
-    font-weight: 700;
-}}
-
-.filler-cell {{
-    background-color: #0d1117; /* Same as default bg */
-}}
-
-.fold-row {{
-    text-align: center;
-    background-color: #161b22;
-    color: #8b949e;
-    padding: 4px 0 !important;
-    user-select: none;
-}}
-
-.amber-primary {{
-    background-color: rgba(210, 153, 34, 0.4);
-    display: inline-block;
-    width: 100%;
-}}
-.amber-related {{
-    background-color: rgba(210, 153, 34, 0.15);
-    display: inline-block;
-    width: 100%;
-}}
 .neo-card > div[style*="padding:16px"] {{ padding: 32px !important; }}
 .neo-card > div[style*="padding:16px 0"] {{ padding: 32px 0 !important; }}
 
@@ -465,32 +350,26 @@ h1, h2, h3, h4, h5, h6 {{
 
 /* 
 ====================================================================
-4. DIFF VIEWER & TRACEBACK STRUCTURE
+4. TRACEBACK STRUCTURE
 ==================================================================== 
 */
-.diff-scroll {{ max-height: 560px; overflow-y: auto; overflow-x: auto; background: var(--neo-white); }}
-table.diff-table {{ width: 100%; border-collapse: collapse; font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', "SF Mono", Consolas, monospace; font-size: 0.85rem; }}
-table.diff-table td {{ padding: 2px 8px; white-space: pre; vertical-align: top; border: none; }}
-.ln-col {{ width: 42px; color: var(--neo-black); font-weight: bold; text-align: right; user-select: none; background: #e0e0e0; position: sticky; border-right: 2px solid var(--neo-black); }}
-.code-col {{ width: 50%; color: var(--neo-black); }}
-.filler-cell {{ background: repeating-linear-gradient(135deg, rgba(0,0,0,0.05), rgba(0,0,0,0.05) 6px, transparent 6px, transparent 12px) !important; }}
-
-tr.diff-header-row .header-cell {{ 
-    position: sticky; top: 0; background: var(--neo-black); 
-    font-weight: 900; font-size: 0.85rem; letter-spacing: 0.05em; 
-    color: var(--neo-white); padding: 8px 8px; z-index: 2;
-    text-align: center; border-bottom: 2px solid var(--neo-black);
-}}
-tr.diff-row:hover td.code-col {{ filter: brightness(0.95); }}
-.amber-primary {{ background: var(--amber-primary-bg) !important; display: inline-block; width: 100%; box-shadow: inset 0 0 0 2px var(--neo-black); font-weight: bold; }}
-.amber-related {{ display: inline-block; width: 100%; box-shadow: inset 0 0 0 2px var(--amber-related-border); }}
-
-{pygments_css}
-
 .trace-frame-row {{ font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', "SF Mono", Consolas, monospace; font-size: 0.85rem; padding: 8px 12px; border-left: 4px solid var(--neo-black); background: rgba(245, 197, 24, 0.35); color: var(--neo-black); font-weight: bold; margin-bottom: 8px; border-radius: 2px; }}
 .trace-noise-row {{ color: #555; font-size: 0.8rem; font-style: italic; padding: 2px 8px; }}
-.truncation-banner {{ background: var(--neo-yellow); border: var(--neo-border); padding: 16px 24px !important; font-size: 0.95rem; font-weight: 900; margin-bottom: 32px; box-shadow: var(--neo-shadow); }}
 .feedback-banner {{ background: var(--neo-white); border: var(--neo-border); padding: 32px !important; margin-bottom: 32px !important; font-size: 0.95rem; font-weight: bold; box-shadow: var(--neo-shadow); }}
+
+/* 
+====================================================================
+4.1 MONACO EDITOR — ERROR LINE DECORATIONS
+==================================================================== 
+*/
+.monaco-error-primary {{
+    background-color: rgba(245, 197, 24, 0.35) !important;
+    border-left: 3px solid #f5c518 !important;
+}}
+.monaco-error-related {{
+    background-color: rgba(245, 197, 24, 0.12) !important;
+    border-left: 2px solid #f5c518 !important;
+}}
 
 /* 
 ====================================================================
@@ -527,12 +406,7 @@ tr.diff-row:hover td.code-col {{ filter: brightness(0.95); }}
     color: #555;
     margin-bottom: 8px;
 }}
-.pane-code-frame {{
-    border: 3px solid var(--neo-black);
-    max-height: 460px;
-    overflow: auto;
-    background: #ffffff;
-}}
+
 
 /* 
 ====================================================================
@@ -941,23 +815,5 @@ section[data-testid="stSidebar"],
     box-shadow: none !important;
 }}
 
-/* Standalone Code Viewer (Light Theme) */
-.viewer-table {{ 
-    width: 100%; border-collapse: collapse; 
-    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', "SF Mono", Consolas, monospace; 
-    font-size: 0.85rem; 
-    background-color: #ffffff;
-}}
-.viewer-table td {{ 
-    padding: 2px 8px; white-space: pre; vertical-align: top; border: none; 
-}}
-.viewer-ln-col {{ 
-    width: 42px; color: #6e7681; font-weight: bold; text-align: right; 
-    user-select: none; background: #f0f0f0; border-right: 1px solid #d0d0d0; position: sticky; left: 0;
-    padding-right: 12px;
-}}
-.viewer-code-col {{ 
-    width: 100%; color: #101010; padding-left: 16px !important; border-left: 1px solid #d0d0d0;
-}}
 </style>
 """

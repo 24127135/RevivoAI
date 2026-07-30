@@ -8,19 +8,21 @@ from nicegui import ui, app, events, background_tasks
 # Import from backend
 from backend.models import FileStatus, STATUS_META, WARNING_STATUSES, ProjectFile
 from backend.logic import (
-    parse_traceback, compute_anchors, group_frames_for_disclosure, 
-    get_render_window, expand_window_for_related, build_diff_rows, pygments_style_defs
+    parse_traceback, compute_anchors, group_frames_for_disclosure,
 )
 from backend.seed import build_seed_files
 from backend.import_utils import import_from_uploads, import_local_project
 
 # Import from frontend
 from frontend.styles import get_css
-from frontend.components import get_diff_html, get_code_viewer_html, get_code_pane_html, TRANSLATING_PHASES, SANDBOX_PHASES
+from frontend.components import TRANSLATING_PHASES, SANDBOX_PHASES
+from frontend.monaco_editor import MonacoEditor
 
 # ============================================================================
 # STATE INIT
 # ============================================================================
+SIDEBAR_WIDTH_PX = 350
+
 class AppState:
     def __init__(self):
         self.files: dict[str, ProjectFile] = {}
@@ -32,8 +34,6 @@ class AppState:
         self.edit_buffer: dict[str, str] = {}        
         self.trace_expanded: dict[str, bool] = {}     
         self.show_full_trace: dict[str, bool] = {}    
-        self.load_full_file: dict[str, bool] = {}     
-        self.confirm_load_full: dict[str, bool] = {}  
         self.batch_feedback: dict | None = None   
         self.rejecting: dict[str, bool] = {}          
         self.import_mode: str | None = None
@@ -50,6 +50,7 @@ class AppState:
         self.agent_state: dict[str, str] = {}         
         self.execution_logs: dict[str, list[str]] = {} 
         self.current_terminal = None
+        self.fullscreen_mode: str | None = None  # None, 'diff', 'source', 'edit_legacy', 'edit_ai'
 
 state = AppState()
 
@@ -123,6 +124,7 @@ def folder_has_warning(folder_files: list[ProjectFile]) -> int:
 
 def set_active_buffer(file_id: str): 
     state.active_buffer = file_id
+    state.fullscreen_mode = None
     refresh_all()
 
 def clear_batch_selection():
@@ -598,6 +600,58 @@ def render_main():
     
     meta = STATUS_META.get(f.status, {"icon": "❓", "label": "UNKNOWN", "color": "gray"})
     f_color = meta["color"]
+
+    if state.fullscreen_mode:
+        _fs_titles = {
+            'diff': 'Expanded Diff Viewer',
+            'source': 'Expanded Source Viewer',
+            'edit': 'Expanded Editor (Diff Mode)',
+        }
+        _fs_title = _fs_titles.get(state.fullscreen_mode, 'Expanded Viewer')
+
+        def _close_expand():
+            state.fullscreen_mode = None
+            render_main.refresh()
+
+        with ui.element('div').classes('fixed z-40 bg-[#1e1e1e]').style(
+            f'top:0; right:0; bottom:0; left:{SIDEBAR_WIDTH_PX}px; overflow:hidden;'
+        ):
+            with ui.row().classes('w-full justify-between items-center p-2').style('height:56px; flex-shrink:0;'):
+                ui.label(_fs_title).classes('text-white text-lg font-bold')
+                ui.button(icon='close', on_click=_close_expand).props('flat round text-white')
+
+            if state.fullscreen_mode == 'diff':
+                MonacoEditor(
+                    value=f.ai_source,
+                    original_value=f.legacy_source,
+                    language=f.language,
+                    readonly=True,
+                    diff_mode=True,
+                    primary_line=f.primary_error_line,
+                    height='calc(100vh - 56px)'
+                ).classes('w-full').style('height:calc(100vh - 56px); overflow:hidden;')
+            elif state.fullscreen_mode == 'source':
+                MonacoEditor(
+                    value=f.legacy_source,
+                    language=f.language,
+                    readonly=True,
+                    height='calc(100vh - 56px)'
+                ).classes('w-full').style('height:calc(100vh - 56px); overflow:hidden;')
+            elif state.fullscreen_mode == 'edit':
+                current_draft = state.edit_buffer.get(active_id, f.ai_source)
+                def _on_fs_change(new_val: str, fid=active_id):
+                    state.edit_buffer[fid] = new_val
+                    mark_dirty(fid)
+                MonacoEditor(
+                    value=current_draft,
+                    original_value=f.legacy_source,
+                    language=f.language,
+                    readonly=False,
+                    diff_mode=True,
+                    on_change=_on_fs_change,
+                    height='calc(100vh - 56px)'
+                ).classes('w-full').style('height:calc(100vh - 56px); overflow:hidden;')
+        return
     
     if state.batch_feedback:
         fb = state.batch_feedback
@@ -656,32 +710,23 @@ def render_main():
 
     # CARD 2: Progress / Action State
     if f.status == FileStatus.QUEUED:
-        html_str = get_code_viewer_html(
-            code=f.legacy_source,
-            language=f.language,
-            title="LEGACY SOURCE CODE",
-            desc="",  # Removed the description text
-            pill="VIEWER"
-        )
-                # Inject inline CSS to trim the header height and hide any residual description space
-        styled_html = f"""
-            <style>
-                .legacy-slim-header .neo-card-header {{
-                    padding-top: 3px !important;
-                    padding-bottom: 3px !important;
-                    min-height: auto !important;
-                }}
-                .legacy-slim-header .header-desc {{
-                    display: none !important;
-                    margin: 0 !important;
-                }}
-            </style>
-            <div class="legacy-slim-header">
-                {html_str}
-            </div>
-        """
-        ui.html(html_str).classes('w-full mb-6')
         skip_to_action_bar = True
+        with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
+            with ui.row().classes('neo-card-header compact-header w-full justify-between items-center'):
+                ui.html('''
+                <div class="flex items-center">
+                    <div class="header-left">
+                        <div class="neo-card-title-group">LEGACY SOURCE CODE</div>
+                    </div>
+                    <div class="stat-pill green">VIEWER</div>
+                </div>
+                ''')
+                ui.button('Expand', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'source'), render_main.refresh())).props('flat dense size=sm').classes('font-bold')
+            MonacoEditor(
+                value=f.legacy_source,
+                language=f.language,
+                readonly=True,
+            ).classes('w-full').style('height:520px;')
         
     elif f.status == FileStatus.TRANSLATING:
         skip_to_action_bar = True
@@ -733,63 +778,62 @@ def render_main():
                 
             render_terminal(is_half=True)
 
-    # Diff Viewer
+    # Monaco Diff Viewer / Edit Mode
     if not skip_to_action_bar and f.status not in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
-        legacy_lines, ai_lines = f.legacy_source.splitlines(), f.ai_source.splitlines()
-        total_lines = max(len(legacy_lines), len(ai_lines))
-        load_full = state.load_full_file.get(active_id, False)
-
-        if load_full:
-            window, out_of_range = (0, total_lines), []
-        else:
-            window = get_render_window(total_lines, f.primary_error_line)
-            window, out_of_range = expand_window_for_related(window, f.related_error_lines, total_lines)
-
-        if (window[0] > 0 or window[1] < total_lines) and not load_full:
-            anchor_note = f" (centered on error at line {f.primary_error_line})" if f.primary_error_line else ""
-            with ui.row().classes('w-full justify-between items-center mb-4'):
-                ui.html(f'<div class="truncation-banner mb-0">⚠️ Showing lines {window[0]+1:,}-{window[1]:,} of {total_lines:,}{anchor_note}</div>').classes('flex-1 mr-4')
-                ui.button("Load Full File ↓", on_click=lambda: (state.confirm_load_full.update({active_id: True}), render_main.refresh())).classes('w-48')
-            
-            if state.confirm_load_full.get(active_id):
-                with ui.row().classes('w-full bg-yellow-900/30 p-4 rounded mb-4 items-center gap-4'):
-                    ui.label(f"This file has {total_lines:,} lines and may slow down your browser. Continue?")
-                    ui.button("Yes", on_click=lambda: (state.load_full_file.update({active_id: True}), state.confirm_load_full.update({active_id: False}), render_main.refresh()))
-                    ui.button("Cancel", on_click=lambda: (state.confirm_load_full.update({active_id: False}), render_main.refresh()))
-
-        for ln in out_of_range: ui.label(f"ℹ️ Related frame at line {ln} is outside the displayed range.").classes('text-gray-400 text-sm')
-
         diff_state_val = state.diff_state.get(active_id, "readonly")
         if diff_state_val == "editing":
-            with ui.column().classes('w-full neo-card p-0 mb-6'):
-                ui.html("""
-                <div class="neo-card-header bleed compact-header">
-                    <div class="header-left">
-                        <div class="neo-card-title-group">MANUAL EDIT MODE</div>
-                        <div class="header-desc">Manually override AI-generated patch before re-testing.</div>
+            with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
+                with ui.row().classes('neo-card-header bleed compact-header w-full justify-between items-center'):
+                    ui.html('''
+                    <div class="flex items-center">
+                        <div class="header-left">
+                            <div class="neo-card-title-group">MANUAL EDIT MODE</div>
+                            <div class="header-desc">Manually override AI-generated patch before re-testing.</div>
+                        </div>
+                        <div class="stat-pill yellow">EDIT</div>
                     </div>
-                    <div class="stat-pill yellow">EDIT</div>
-                </div>
-                """).classes('w-full')
-                with ui.row().classes('w-full p-4 gap-4'):
-                    with ui.column().classes('flex-1'):
-                        ui.html('<div class="pane-label">LEGACY (READ-ONLY)</div>')
-                        ui.html(f'<div class="pane-code-frame">{get_code_pane_html(f.legacy_source, f.language)}</div>').classes('w-full')
-                    with ui.column().classes('flex-1'):
-                        ui.html('<div class="pane-label">AI-GENERATED (EDITABLE)</div>')
-                        current_draft = state.edit_buffer.get(active_id, f.ai_source)
-                        text_area = ui.textarea(value=current_draft).classes('w-full font-mono').props('rows=20 spellcheck=false')
-                        def on_change(e):
-                            state.edit_buffer[active_id] = e.value
-                            mark_dirty(active_id)
-                        text_area.on('change', on_change)
+                    ''')
+                    ui.button('Expand', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'edit'), render_main.refresh())).props('flat dense size=sm').classes('font-bold')
+                current_draft = state.edit_buffer.get(active_id, f.ai_source)
+
+                def on_monaco_change(new_val: str, fid=active_id):
+                    state.edit_buffer[fid] = new_val
+                    mark_dirty(fid)
+
+                MonacoEditor(
+                    value=current_draft,
+                    original_value=f.legacy_source,
+                    language=f.language,
+                    readonly=False,
+                    diff_mode=True,
+                    on_change=on_monaco_change,
+                ).classes('w-full').style('height:520px; border-top: 3px solid var(--neo-black);')
                 
-                with ui.row().classes('w-full p-4 gap-4'):
+                with ui.row().classes('w-full p-4 gap-4 justify-end bg-white').style('border-top: 3px solid var(--neo-black);'):
+                    ui.button("Cancel", on_click=lambda: (state.diff_state.update({active_id: "readonly"}), refresh_all())).props('outline')
                     ui.button("💾 Save & Re-test", on_click=lambda: (save_and_retest(active_id, state.edit_buffer.get(active_id, f.ai_source)), refresh_all())).props('color=primary')
-                    ui.button("Cancel", on_click=lambda: (state.diff_state.update({active_id: "readonly"}), refresh_all()))
         else:
-            diff_data = build_diff_rows(legacy_lines, ai_lines, f.language, window, f.primary_error_line, f.related_error_lines, mode_override="split", disable_folding=True)
-            ui.html(get_diff_html(diff_data)).classes('w-full mb-6')
+            with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
+                with ui.row().classes('neo-card-header bleed compact-header w-full justify-between items-center'):
+                    ui.html('''
+                    <div class="flex items-center">
+                        <div class="header-left">
+                            <div class="neo-card-title-group">DIFF VIEWER</div>
+                            <div class="header-desc">Compare legacy code (left) with AI-generated patch (right).</div>
+                        </div>
+                        <div class="stat-pill blue">DIFF</div>
+                    </div>
+                    ''')
+                    ui.button('Expand', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'diff'), render_main.refresh())).props('flat dense size=sm').classes('font-bold')
+
+                MonacoEditor(
+                    value=f.ai_source,
+                    original_value=f.legacy_source,
+                    language=f.language,
+                    readonly=True,
+                    diff_mode=True,
+                    primary_line=f.primary_error_line,
+                ).classes('w-full')
 
         if f.raw_traceback:
             frames = parse_traceback(f.raw_traceback, f.language, f.filename)
@@ -918,7 +962,7 @@ def render_action_bar():
 # ============================================================================
 @ui.page('/')
 def index():
-    ui.add_head_html(get_css(pygments_style_defs()))
+    ui.add_head_html(get_css())
     
     ui.colors(primary='#ff5fd1', secondary='#fdfbf7', accent='#f5c518', dark='#101010', positive='#00c853', negative='#ff3333', info='#33ccff', warning='#f5c518')
     

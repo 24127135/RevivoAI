@@ -4,7 +4,7 @@ from typing import List, Any
 from .models import ProjectFile, FileStatus
 
 def _guess_lang(filename: str) -> str:
-    """Simple extension checker to route to the correct Pygments lexer."""
+    """Simple extension checker to route to the correct Monaco Editor language."""
     ext = filename.split(".")[-1].lower() if "." in filename else ""
     if ext in ["c", "h", "cpp", "hpp"]: return "c"
     if ext in ["r", "rmd"]: return "r"
