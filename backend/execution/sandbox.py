@@ -5,6 +5,7 @@ import io
 import time
 import uuid
 import concurrent.futures
+import posixpath
 
 
 class DockerSandboxManager:
@@ -70,23 +71,58 @@ class DockerSandboxManager:
             print(f"[Sandbox Error] Cannot create container: {e}")
             return ""
 
+    _WORKSPACE_ROOT = "/workspace"
+
+    def _validate_container_path(self, containerPath: str) -> str:
+        """
+        Mirrors the role of MCPClient.validatePath() but scoped to the sandbox
+        filesystem: ensures containerPath resolves strictly inside the bounded
+        workspace root, rejecting '..' traversal and absolute escapes, and
+        returns the normalized absolute path to use for tar/mkdir.
+        """
+        if not containerPath or not containerPath.strip():
+            raise ValueError("containerPath must not be empty.")
+
+        candidate = (
+            containerPath
+            if containerPath.startswith("/")
+            else posixpath.join(self._WORKSPACE_ROOT, containerPath)
+        )
+        normalized = posixpath.normpath(candidate)
+
+        if normalized == self._WORKSPACE_ROOT or not normalized.startswith(self._WORKSPACE_ROOT + "/"):
+            raise PermissionError(
+                f"Path '{containerPath}' resolves outside the sandbox workspace "
+                f"root '{self._WORKSPACE_ROOT}'; refusing to write."
+            )
+
+        return normalized
+
     def injectCode(self, containerPath: str, content: str) -> None:
         """
         Bypasses circular dependency by pushing the candidate code directly into the
         ephemeral container's isolated filesystem via a tarball stream.
+
+        containerPath is validated against the sandbox workspace root before any
+        filesystem operation is attempted (see _validate_container_path).
         """
         if not self._container:
             raise RuntimeError("Sandbox has not been initialized.")
 
+        safe_path = self._validate_container_path(containerPath)
+
         tar_stream = io.BytesIO()
         with tarfile.open(fileobj=tar_stream, mode='w') as tar:
             content_bytes = content.encode('utf-8')
-            tarinfo = tarfile.TarInfo(name=containerPath.split('/')[-1])
+            tarinfo = tarfile.TarInfo(name=safe_path.split('/')[-1])
             tarinfo.size = len(content_bytes)
+            if self._run_as_non_root:
+                tarinfo.uid = 1000
+                tarinfo.gid = 1000
             tar.addfile(tarinfo, io.BytesIO(content_bytes))
 
         tar_stream.seek(0)
-        dir_path = "/".join(containerPath.split('/')[:-1]) or "/"
+        dir_path = "/".join(safe_path.split('/')[:-1]) or "/"
         user_conf = "1000:1000" if self._run_as_non_root else "root"
         self._container.exec_run(f"mkdir -p {dir_path}", user=user_conf)
 
