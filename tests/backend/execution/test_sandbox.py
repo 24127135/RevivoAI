@@ -7,6 +7,7 @@ Naming follows README.md conventions:
 Docker is fully mocked - no real Docker daemon is required to run this suite.
 Run with: poetry run pytest tests/backend/test_docker_sandbox_manager.py -v
 """
+import tarfile
 import time
 from unittest.mock import MagicMock, patch
 
@@ -220,10 +221,86 @@ def test_inject_code_creates_parent_directory_as_non_root_user(running_sandbox, 
     assert call_args[0] == "/workspace/nested"
 
 
-def test_inject_code_top_level_path_uses_root_directory(running_sandbox, mock_container):
+def test_inject_code_relative_path_resolves_under_workspace_root(running_sandbox, mock_container):
+    # A bare relative filename must be anchored under /workspace, not container root.
     running_sandbox.injectCode("script.py", "print('hello')")
 
-    mock_container.exec_run.assert_called_with("mkdir -p /", user="1000:1000")
+    mock_container.exec_run.assert_called_with("mkdir -p /workspace", user="1000:1000")
+    call_args, _ = mock_container.put_archive.call_args
+    assert call_args[0] == "/workspace"
+
+
+def test_inject_code_relative_traversal_outside_workspace_is_rejected(running_sandbox, mock_container):
+    with pytest.raises(PermissionError, match="outside the sandbox workspace"):
+        running_sandbox.injectCode("../../etc/passwd", "malicious content")
+
+    mock_container.put_archive.assert_not_called()
+
+
+def test_inject_code_absolute_path_outside_workspace_is_rejected(running_sandbox, mock_container):
+    with pytest.raises(PermissionError, match="outside the sandbox workspace"):
+        running_sandbox.injectCode("/etc/passwd", "malicious content")
+
+    mock_container.put_archive.assert_not_called()
+
+
+def test_inject_code_absolute_path_traversal_via_dotdot_is_rejected(running_sandbox, mock_container):
+    with pytest.raises(PermissionError, match="outside the sandbox workspace"):
+        running_sandbox.injectCode("/workspace/../../etc/passwd", "malicious content")
+
+    mock_container.put_archive.assert_not_called()
+
+
+def test_inject_code_workspace_root_itself_is_rejected(running_sandbox, mock_container):
+    # A path resolving to the workspace directory itself has no filename target.
+    with pytest.raises(PermissionError, match="outside the sandbox workspace"):
+        running_sandbox.injectCode("/workspace", "malicious content")
+
+    mock_container.put_archive.assert_not_called()
+
+
+def test_inject_code_empty_path_raises_value_error(running_sandbox, mock_container):
+    with pytest.raises(ValueError, match="must not be empty"):
+        running_sandbox.injectCode("", "print('hello')")
+
+    mock_container.put_archive.assert_not_called()
+
+
+def test_inject_code_absolute_path_already_under_workspace_is_accepted(running_sandbox, mock_container):
+    running_sandbox.injectCode("/workspace/analytics/model.py", "print('ok')")
+
+    mock_container.exec_run.assert_called_with("mkdir -p /workspace/analytics", user="1000:1000")
+    call_args, _ = mock_container.put_archive.call_args
+    assert call_args[0] == "/workspace/analytics"
+
+
+def test_inject_code_non_root_sandbox_writes_file_owned_by_non_root_uid(running_sandbox, mock_container):
+    # Guards against tarfile.TarInfo's uid=0/gid=0 default silently making every
+    # injected file root-owned even inside a chowned, non-root workspace dir.
+    running_sandbox.injectCode("/workspace/model.py", "print('ok')")
+
+    _, tar_stream = mock_container.put_archive.call_args[0]
+    tar_stream.seek(0)
+    with tarfile.open(fileobj=tar_stream, mode='r') as tar:
+        member = tar.getmembers()[0]
+        assert member.name == "model.py"
+        assert member.uid == 1000
+        assert member.gid == 1000
+
+
+def test_inject_code_root_sandbox_keeps_root_owned_file(sandbox_manager, mock_docker_client, mock_container):
+    sandbox_manager._run_as_non_root = False
+    mock_docker_client.containers.run.return_value = mock_container
+    sandbox_manager.createSandbox()
+
+    sandbox_manager.injectCode("/workspace/model.py", "print('ok')")
+
+    _, tar_stream = mock_container.put_archive.call_args[0]
+    tar_stream.seek(0)
+    with tarfile.open(fileobj=tar_stream, mode='r') as tar:
+        member = tar.getmembers()[0]
+        assert member.uid == 0
+        assert member.gid == 0
 
 
 # ---------------------------------------------------------------------------
