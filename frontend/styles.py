@@ -87,7 +87,7 @@ body {{
     background-image: radial-gradient(circle, rgba(16,16,16,0.07) 1px, transparent 1.4px);
     background-size: 10px 10px;
     color: var(--neo-black);
-    font-family: 'Space Grotesk', 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace !important;
+    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Space Grotesk', 'Roboto Mono', Consolas, monospace !important;
 }}
 
 h1, h2, h3, h4, h5, h6 {{
@@ -615,10 +615,10 @@ section[data-testid="stSidebar"],
     color: var(--neo-black);
 }}
 .welcome-desc {{
-    font-size: 1.2rem;
+    font-size: 1.4rem;
     font-weight: 700;
     color: var(--neo-black);
-    max-width: 640px;
+    max-width: 900px;
     margin: 0 auto var(--space-2) auto;
     line-height: 1.5;
 }}
