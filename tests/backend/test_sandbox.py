@@ -5,7 +5,7 @@ Naming follows README.md conventions:
     test_<component>_<scenario>_<expected_behavior>
 
 Docker is fully mocked - no real Docker daemon is required to run this suite.
-Run with: poetry run pytest -m tests/backend/test_sandbox.py
+Run with: poetry run pytest tests/backend/test_sandbox.py -v
 """
 import tarfile
 import time

@@ -8,7 +8,7 @@ Covers the two acceptance criteria for KAN-63:
     1. Reading a file inside the workspace succeeds.
     2. Reading a file outside the workspace explicitly fails and is logged.
 
-Run with: poetry run pytest -m tests/backend/test_mcp_client_security.py
+Run with: poetry run pytest tests/backend/test_mcp_client.py -v
 """
 import logging
 import os
@@ -137,3 +137,33 @@ def test_read_file_nonexistent_file_inside_workspace_raises_file_not_found(conne
     # accidentally swallowed or misreported as PermissionError.
     with pytest.raises(FileNotFoundError):
         connected_client.readFile("does_not_exist.py")
+
+
+def test_mcp_client_io_operations(workspace):
+    """Verifies standard I/O operations for KAN-61."""
+    client = MCPClient(server_uri="http://localhost:8080", allowed_root_path=workspace)
+    client.connect()
+
+    # Write file
+    assert client.writeFile("test_note.txt", "payload") is True
+    assert client.writeFile("logs/log.json", '{"status":"ok"}') is True
+
+    # Read file
+    assert client.readFile("test_note.txt") == "payload"
+
+    # List directory
+    items = client.listDirectory("")
+    assert "test_note.txt" in items
+    assert "logs" in items
+
+    client.disconnect()
+
+
+def test_mcp_client_security_boundary(workspace):
+    """Verifies that the client blocks path traversal (KAN-62)."""
+    client = MCPClient(server_uri="http://localhost:8080", allowed_root_path=workspace)
+    client.connect()
+
+    # Attempt to write to a path outside the allowed_root_path (e.g., parent directory)
+    with pytest.raises(PermissionError):
+        client.writeFile("../malicious.txt", "hacked")
