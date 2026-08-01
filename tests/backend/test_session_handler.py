@@ -5,7 +5,7 @@ Naming follows README.md conventions:
     test_<component>_<scenario>_<expected_behavior>
 
 Supabase is fully mocked - no real database connection is required to run
-this suite. Run with: poetry run pytest tests/backend/test_session_handler.py -v
+this suite. Run with: poetry run pytest -m tests/backend/test_session_handler.py
 """
 import os
 from unittest.mock import MagicMock, patch

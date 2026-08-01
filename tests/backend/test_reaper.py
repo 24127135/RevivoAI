@@ -3,8 +3,7 @@ Tests for backend/reaper.py
 
 Naming follows README.md conventions:
     test_<component>_<scenario>_<expected_behavior>
-
-Run with: poetry run pytest tests/backend/test_reaper.py -v
+Run with: poetry run pytest -m tests/backend/test_reaper.py
 """
 import asyncio
 from unittest.mock import AsyncMock
