@@ -5,7 +5,7 @@ Naming follows README.md conventions:
     test_<component>_<scenario>_<expected_behavior>
 
 Docker is fully mocked - no real Docker daemon is required to run this suite.
-Run with: poetry run pytest -m tests/backend/execution/test_sandbox.py
+Run with: poetry run pytest -m tests/backend/test_sandbox.py
 """
 import tarfile
 import time
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from docker.errors import APIError, DockerException
 
-from backend.execution.sandbox import DockerSandboxManager
+from backend.sandbox import DockerSandboxManager
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ def mock_docker_client():
     Patches docker.from_env() so no real Docker daemon connection is attempted.
     Yields the MagicMock client so tests can configure/inspect calls.
     """
-    with patch("backend.execution.sandbox.docker.from_env") as mock_from_env:
+    with patch("backend.sandbox.docker.from_env") as mock_from_env:
         client = MagicMock()
         mock_from_env.return_value = client
         yield client
@@ -83,7 +83,7 @@ def test_docker_sandbox_manager_daemon_available_initializes_defaults(mock_docke
 
 
 def test_docker_sandbox_manager_daemon_unavailable_raises_runtime_error():
-    with patch("backend.execution.sandbox.docker.from_env") as mock_from_env:
+    with patch("backend.sandbox.docker.from_env") as mock_from_env:
         mock_from_env.side_effect = DockerException("daemon not reachable")
 
         with pytest.raises(RuntimeError, match="Cannot connect to Docker Daemon"):
