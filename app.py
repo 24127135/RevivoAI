@@ -384,7 +384,7 @@ def render_welcome():
             </div>
         ''')
         
-        with ui.row().classes('w-full max-w-4xl justify-center gap-8 px-4'):
+        with ui.row().classes('w-full max-w-5xl justify-center gap-8 px-4'):
             if state.import_mode == "FILES":
                 with ui.column().classes('w-full max-w-lg'):
                     ui.markdown("### Upload Files")
@@ -402,21 +402,21 @@ def render_welcome():
                         
             else:
                 with ui.column().classes('w-full items-center pt-16'):
-                    with ui.row().classes('w-full max-w-5xl justify-center items-stretch gap-8 mb-8'):
+                    with ui.row().classes('w-full max-w-7xl justify-center items-stretch gap-8 mb-8'):
                         
                         # Added `welcome-import-card` for our aggressive CSS override target
                         with ui.card().classes(
                             'welcome-import-card flex-1 cursor-pointer flex flex-col items-center justify-center text-center '
                             'border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-8'
                         ) as card1:
-                            ui.html('<div class="font-black whitespace-nowrap text-2xl">IMPORT FILES</div><div class="text-sm mt-4 font-bold">Pick one or more individual source files to translate.</div>')
+                            ui.html('<div class="welcome-import-title">IMPORT FILES</div><div class="welcome-import-desc">Select individual source files to translate. Best for targeting a few specific files.</div>')
                             card1.on('click', lambda: (setattr(state, 'import_mode', "FILES"), refresh_all()))
                             
                         with ui.card().classes(
                             'welcome-import-card flex-1 cursor-pointer flex flex-col items-center justify-center text-center '
                             'border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-8'
                         ) as card2:
-                            ui.html('<div class="font-black whitespace-nowrap text-2xl">IMPORT PROJECT</div><div class="text-sm mt-4 font-bold">Scans local directory trees directly from disk.</div>')
+                            ui.html('<div class="welcome-import-title">IMPORT PROJECT</div><div class="welcome-import-desc">Scan a local directory tree for source files. Best for translating an entire codebase.</div>')
                             card2.on('click', handle_native_import_project)
                             
                     ui.html('<div class="text-gray-400 font-bold mb-8">--- OR ---</div>')
@@ -742,7 +742,7 @@ def render_main():
         with ui.row().classes('w-full items-stretch gap-6 mb-6 flex-nowrap'):
             with ui.column().classes('flex-1 h-[500px] neo-card neo-card-spotlight p-0 mb-0'):
                 ui.html('''
-                    <div class="neo-card-header bleed">
+                    <div class="neo-card-header">
                         <div class="header-left">
                             <div class="neo-card-title-group"><span class="thinking-pulse-dot"></span> GENERATING PATCH</div>
                             <div class="header-desc">LLM is parsing legacy code and writing modern replacement.</div>
@@ -767,7 +767,7 @@ def render_main():
         with ui.row().classes('w-full items-stretch gap-6 mb-6 flex-nowrap'):
             with ui.column().classes('flex-1 h-[500px] neo-card neo-card-spotlight p-0 mb-0'):
                 ui.html('''
-                    <div class="neo-card-header bleed">
+                    <div class="neo-card-header">
                         <div class="header-left">
                             <div class="neo-card-title-group"><span class="thinking-pulse-dot"></span> SANDBOX EXECUTION</div>
                             <div class="header-desc">Executing containerized test suite against generated patch.</div>
@@ -783,7 +783,7 @@ def render_main():
         diff_state_val = state.diff_state.get(active_id, "readonly")
         if diff_state_val == "editing":
             with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
-                with ui.row().classes('neo-card-header bleed compact-header w-full justify-between items-center'):
+                with ui.row().classes('neo-card-header compact-header w-full justify-between items-center'):
                     ui.html('''
                     <div class="flex items-center">
                         <div class="header-left">
@@ -814,12 +814,11 @@ def render_main():
                     ui.button("💾 Save & Re-test", on_click=lambda: (save_and_retest(active_id, state.edit_buffer.get(active_id, f.ai_source)), refresh_all())).props('color=primary')
         else:
             with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
-                with ui.row().classes('neo-card-header bleed compact-header w-full justify-between items-center'):
+                with ui.row().classes('neo-card-header compact-header w-full justify-between items-center'):
                     ui.html('''
                     <div class="flex items-center">
                         <div class="header-left">
                             <div class="neo-card-title-group">DIFF VIEWER</div>
-                            <div class="header-desc">Compare legacy code (left) with AI-generated patch (right).</div>
                         </div>
                         <div class="stat-pill blue">DIFF</div>
                     </div>
@@ -849,7 +848,7 @@ def render_main():
 
             with ui.column().classes('w-full neo-card p-0 mb-6'):
                 ui.html("""
-                <div class="neo-card-header bleed compact-header">
+                <div class="neo-card-header compact-header">
                     <div class="header-left">
                         <div class="neo-card-title-group">TRACEBACK CONSOLE</div>
                         <div class="header-desc">Sandbox execution failed. See actionable frames above.</div>
