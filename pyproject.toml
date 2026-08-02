@@ -16,6 +16,9 @@ Pygments = ">=2.17.0"
 langgraph = ">=0.2.0"
 docker = "*"
 supabase = "*"
+fastapi = "*"
+httpx = "*"
+websockets = "*"
 google-genai = "^2.16.0"
 
 [build-system]
@@ -29,11 +32,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = [
-  "."
-]
-
-[tool.pytest.ini_options]
+pythonpath = ["."]
 filterwarnings = [
     "ignore:.*'_UnionGenericAlias' is deprecated.*:DeprecationWarning:google.genai.*",
 ]

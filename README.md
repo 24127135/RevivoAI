@@ -2,7 +2,7 @@
 
 RevivoAI is a legacy code modernization tool that leverages AI to draft patches and an autonomous Docker sandbox to verify them.
 
-This repository currently represents the **frontend wireframe and core architecture** for a NiceGUI-based experience. The app is intentionally structured into a decoupled frontend/backend pattern so the browser UI stays lightweight while heavier background processing (Docker, MCP, LLMs, orchestration) can be added later without changing the presentation layer.
+This repository now runs as a **decoupled frontend/backend application**. The NiceGUI UI stays lightweight while the FastAPI backend owns orchestration, live websocket updates, execution logging, and session lifecycle management.
 
 ---
 
@@ -51,6 +51,10 @@ Run with Administrator!
    ```
 
    NiceGUI will open the application in your default web browser.
+
+  The frontend talks to the backend on `http://localhost:8000` and opens a websocket at `ws://localhost:8000/ws/{session_id}` for live state updates.
+
+  Session creation uses generated UUID user IDs so Supabase accepts the `Session` insert during initialization.
 
 6. **Run the tests:**
   ```bash
@@ -127,9 +131,9 @@ Run with Administrator!
 
 ---
 
-## 🚀 Futureproofing & Backend Transition Guide
+## 🚀 Backend Workflow Guide
 
-The current codebase mocks the AI generation and sandbox testing steps while preserving a clean separation between UI and backend concerns. Because of that decoupled architecture, adding a real backend later should require minimal changes to the presentation layer.
+The current codebase routes orchestration through the backend so the UI can trigger runs without simulating the workflow locally. The frontend builds a payload, posts it to the backend, and listens for websocket broadcasts to refresh state and logs in real time.
 
 Patch generation now assumes a strict structured response contract: `CHARACTERIZATION`, `REASONING`, `CODE`, `VERIFY`, `ASSUMPTIONS`, and `ACTION`. The `CHARACTERIZATION` section must include at least one `INVARIANT:` line, and the persona prompt in `backend/personas.py` documents the exact formatting expected from the model.
 
@@ -138,7 +142,7 @@ When you are ready to begin the backend engineering phase, follow this roadmap:
 ### Phase 1: Integrating MCP / LLMs
 1. Integrate `backend/mcp_client.py` with the real MCP or LLM backend.
 2. Write a function that accepts a `ProjectFile`'s `legacy_source`, communicates with your LLM through the Model Context Protocol, and returns a translated string.
-3. In `app.py`, replace the hardcoded mock assignment in the transition flow with your real function.
+3. Keep the frontend as a thin trigger layer so orchestration continues to live in the backend.
 
 ### Phase 2: Integrating Docker
 1. Create `backend/docker_runner.py`.
