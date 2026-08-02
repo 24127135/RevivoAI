@@ -48,3 +48,7 @@ def temp_workspace():
     yield "./temp"
     # Teardown
     shutil.rmtree("./temp")
+```
+
+### 2. Cover Prompt Contracts
+When testing LLM orchestration nodes, assert the generated prompt contains the expected persona and output-contract cues. This keeps changes to the refactoring protocol intentional and makes parser assumptions explicit.
