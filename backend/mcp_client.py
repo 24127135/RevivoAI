@@ -1,11 +1,8 @@
 import os
 import uuid
-import logging
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional
-
-logger = logging.getLogger(__name__)
 
 
 class ConnectionStatus(Enum):
@@ -25,47 +22,46 @@ class MCPClient:
 
     def connect(self) -> bool:
         self.__connection_status = ConnectionStatus.CONNECTED
-        logger.info(f"MCPClient connected. Session ID: {self.__session_id}")
+        print(f"[MCPClient] Connected. Session ID: {self.__session_id}")
         return True
 
     def disconnect(self) -> None:
         self.__connection_status = ConnectionStatus.DISCONNECTED
-        logger.info("MCPClient disconnected.")
+        print("[MCPClient] Disconnected.")
 
     def __validatePath(self, path: str) -> bool:
         root_path = Path(self.__allowed_root_path).resolve()
         target_path = Path(os.path.join(self.__allowed_root_path, path)).resolve()
         if not target_path.is_relative_to(root_path):
-            logger.warning(
-                "[Security] Path traversal attempt blocked. "
-                f"session_id={self.__session_id} requested_path='{path}' "
-                f"resolved_to='{target_path}' allowed_root='{root_path}'"
-            )
             raise PermissionError("Security Violation: Directory traversal attempt blocked!")
         return True
 
     def readFile(self, path: str) -> str:
-        self.__validatePath(path)
+        if not self.__validatePath(path):
+            raise PermissionError("Security Violation: Access denied!")
 
         full_path = os.path.join(self.__allowed_root_path, path)
         with open(full_path, 'r', encoding='utf-8') as f:
             return f.read()
 
     def writeFile(self, path: str, content: str) -> bool:
-        self.__validatePath(path)
+        if not self.__validatePath(path):
+            raise PermissionError("Security Violation: Access denied!")
 
         full_path = os.path.join(self.__allowed_root_path, path)
         try:
+            # Create the parent directory if it does not exist.
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, 'w', encoding='utf-8') as f:
                 f.write(content)
             return True
         except Exception as e:
-            logger.error(f"writeFile error for path '{path}': {e}")
+            print(f"[MCPClient] writeFile Error: {e}")
             return False
 
     def listDirectory(self, path: str) -> List[str]:
-        self.__validatePath(path)
+        if not self.__validatePath(path):
+            raise PermissionError("Security Violation: Access denied!")
         full_path = os.path.join(self.__allowed_root_path, path)
         if not os.path.isdir(full_path):
             raise NotADirectoryError(f"Path is not a directory: {path}")
