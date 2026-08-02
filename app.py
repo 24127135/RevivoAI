@@ -1,11 +1,15 @@
 import asyncio
+import json
 import html
 import os
 import time
+import uuid
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
 
+import httpx
+import websockets
 from nicegui import ui, app, events, background_tasks
 
 # Import from backend
@@ -41,6 +45,7 @@ class AppState:
         self.rejecting: dict[str, bool] = {}          
         self.import_mode: str | None = None
         self.project_root: str | None = None
+        self.session_id: str | None = None
         self.mcp_client: MCPClient | None = None
         self.session_handler: SessionHandler | None = None
         
@@ -59,12 +64,17 @@ class AppState:
 
 state = AppState()
 
-def load_demo_project():
+async def load_demo_project():
     """Loads seed data. Everything starts as QUEUED now."""
     files = build_seed_files()
     state.files = {f.file_id: f for f in files}
     state.active_buffer = files[0].file_id
     state.import_mode = None
+    state.session_handler = SessionHandler()
+    session_id = await state.session_handler.initialize_session(user_id=str(uuid.uuid4()))
+    state.session_id = session_id
+    if session_id:
+        background_tasks.create(websocket_listener(session_id))
     refresh_all()
 
 async def pick_directory_async():
@@ -91,7 +101,10 @@ async def handle_native_import_project():
                 
                 # Asynchronously pass the path to SessionHandler
                 state.session_handler = SessionHandler()
-                asyncio.create_task(state.session_handler.initialize_session(folder))
+                session_id = await state.session_handler.initialize_session(user_id=str(uuid.uuid4()))
+                state.session_id = session_id
+                if session_id:
+                    background_tasks.create(websocket_listener(session_id))
                 
                 # Asynchronously pass the path to MCPClient
                 state.mcp_client = MCPClient(server_uri="local://revivoai", allowed_root_path=folder)
@@ -273,79 +286,76 @@ def refresh_all():
     render_sidebar.refresh()
     render_main.refresh()
 
+def build_orchestrator_payload(file_id: str) -> dict:
+    f = get_file(file_id)
+    return {
+        "session_id": state.session_id,
+        "target_file": f,
+        "file_path": f.path,
+        "workspace_dir": state.project_root,
+        "system_prompt": "",
+        "persona": f.persona,
+        "patched_code": "",
+        "iteration_count": 0,
+        "max_iterations": 3,
+    }
+
+
+async def websocket_listener(session_id: str):
+    websocket_url = f"ws://localhost:8000/ws/{session_id}"
+    try:
+        async with websockets.connect(websocket_url) as websocket:
+            while True:
+                message = await websocket.recv()
+                payload = json.loads(message) if isinstance(message, str) else message
+
+                target_file = payload.get("target_file") if isinstance(payload, dict) else None
+                file_id = None
+                if isinstance(target_file, dict):
+                    file_id = target_file.get("file_id")
+                if not file_id:
+                    file_id = state.active_buffer
+
+                if not file_id:
+                    continue
+
+                if isinstance(payload, dict):
+                    if "docker_exit_code" in payload:
+                        state.agent_state[file_id] = payload.get("current_node", state.agent_state.get(file_id, "Done"))
+                    if "traceback_log" in payload and payload["traceback_log"]:
+                        push_log(file_id, str(payload["traceback_log"]))
+                    if "patched_code" in payload and payload["patched_code"]:
+                        state.files[file_id].ai_source = payload["patched_code"]
+                    if "docker_exit_code" in payload:
+                        state.files[file_id].status = FileStatus.PASSED if payload["docker_exit_code"] == 0 else FileStatus.FAILED
+                        if payload["docker_exit_code"] != 0:
+                            state.files[file_id].raw_traceback = str(payload.get("traceback_log", ""))
+
+                render_sidebar.refresh()
+                render_main.refresh()
+    except Exception as exc:
+        if session_id:
+            push_log(state.active_buffer or "", f"[WebSocket] Listener stopped for session {session_id}: {exc}")
+
+
+async def _trigger_backend_run(file_id: str):
+    if not state.session_id:
+        raise RuntimeError("Session has not been initialized.")
+
+    payload = build_orchestrator_payload(file_id)
+    async with httpx.AsyncClient() as client:
+        await client.post(f"http://localhost:8000/api/run/{state.session_id}", json=payload)
+
 # ============================================================================
 # ASYNC SIMULATIONS (LANGGRAPH NODES)
 # ============================================================================
 async def simulate_translation(file_id: str):
-    f = get_file(file_id)
-    f.status = FileStatus.TRANSLATING
-    state.is_thinking = True
-    state.thinking_phase = 0  # Reset phase
-    
-    state.agent_state[file_id] = "Analyze"
-    refresh_all()
-    push_log(file_id, "[LangGraph] Entering Node: 🔍 Analyze")
-    push_log(file_id, f"Parsing legacy code for {f.filename}...")
-    push_log(file_id, "Building Abstract Syntax Tree and resolving dependencies.")
-    
-    await asyncio.sleep(1.2)
-    if not getattr(state, 'is_thinking', False): return
-    
-    state.thinking_phase = 1  # Move to next phase
-    state.agent_state[file_id] = "Propose"
-    refresh_all()
-    push_log(file_id, "[LangGraph] Entering Node: 💡 Propose")
-    push_log(file_id, f"Generating AI patch utilizing persona: '{f.persona_label}'")
-    
-    await asyncio.sleep(1.5)
-    if not getattr(state, 'is_thinking', False): return
-    
-    push_log(file_id, "Patch generated successfully. Handing off to execution environment.")
-    transition_to_sandbox(file_id)
-    state.is_thinking = False
-    await simulate_sandbox(file_id, is_chained=True)
+    push_log(file_id, f"Initializing AgentState with workspace: {state.project_root}")
+    await _trigger_backend_run(file_id)
 
 async def simulate_sandbox(file_id: str, is_chained: bool = False):
-    f = get_file(file_id)
-    f.status = FileStatus.SANDBOX_TESTING
-    state.is_thinking = True
-    state.thinking_phase = 0  # Reset phase
-    
-    state.agent_state[file_id] = "Execute"
-    refresh_all()
-    push_log(file_id, "[LangGraph] Entering Node: ⚡ Execute")
-    push_log(file_id, "Spinning up isolated Docker Sandbox...")
-    
-    await asyncio.sleep(1.0)
-    if not getattr(state, 'is_thinking', False): return
-    
-    state.thinking_phase = 1  # Move to next phase
-    refresh_all()
-    push_log(file_id, "Running test suite against generated patch. Capturing stdout/stderr...")
-    
-    await asyncio.sleep(1.2)
-    if not getattr(state, 'is_thinking', False): return
-    
-    state.thinking_phase = 2  # Move to next phase
-    state.agent_state[file_id] = "Evaluate"
-    refresh_all()
-    push_log(file_id, "[LangGraph] Entering Node: ⚖️ Evaluate")
-    push_log(file_id, "Evaluating test execution results and parsing logs...")
-    
-    await asyncio.sleep(1.0)
-    if not getattr(state, 'is_thinking', False): return
-    
-    resolve_sandbox_now(file_id)
-    state.is_thinking = False
-    
-    if f.status == FileStatus.PASSED:
-        push_log(file_id, "Evaluation Complete: Execution passed. No tracebacks found.")
-    else:
-        push_log(file_id, f"Evaluation Complete: Traceback captured at line {f.primary_error_line}.")
-        push_log(file_id, "Awaiting developer intervention or auto-retry.")
-        
-    state.agent_state[file_id] = "Done"
-    refresh_all()
+    push_log(file_id, f"Initializing AgentState with workspace: {state.project_root}")
+    await _trigger_backend_run(file_id)
 
 def run_translation_simulation(file_id: str):
     background_tasks.create(simulate_translation(file_id))
