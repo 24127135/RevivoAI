@@ -72,6 +72,7 @@ Run with Administrator!
 │   ├── import_utils.py     # File ingestion and directory traversal
 │   ├── logic.py            # Traceback parsing and error-frame analysis
 │   ├── models.py           # Dataclasses, enums, and state contracts
+│   ├── personas.py         # Persona-specific prompt templates and shared refactoring directives
 │   ├── nodes.py            # AST / structural parsing nodes for orchestration
 │   ├── orchestrator.py     # LangGraph state schema and router wrapper
 │   ├── mcp_client.py       # Local MCP-style filesystem client used by the demo
@@ -102,7 +103,9 @@ Run with Administrator!
 * **import_utils.py**
   Handles reading files from the user. Includes upload-oriented helpers and recursive directory traversal for local project imports.
 * **nodes.py**
-  Contains the `ASTParserNode` used by the orchestration layer to inspect the current file, extract structural context, and flag parsing errors.
+  Contains the `ASTParserNode` used by the orchestration layer to inspect the current file, extract structural context, and flag parsing errors, plus the `LLMPatchNode` that builds persona-aware refactoring prompts and validates structured patch responses.
+* **personas.py**
+  Houses the shared refactoring directive and domain persona strings used to steer patch generation.
 * **orchestrator.py**
   Defines the LangGraph `AgentState` schema and a minimal router wrapper for the backend workflow.
 * **mcp_client.py**
@@ -127,6 +130,8 @@ Run with Administrator!
 ## 🚀 Futureproofing & Backend Transition Guide
 
 The current codebase mocks the AI generation and sandbox testing steps while preserving a clean separation between UI and backend concerns. Because of that decoupled architecture, adding a real backend later should require minimal changes to the presentation layer.
+
+Patch generation now assumes a strict structured response contract: `CHARACTERIZATION`, `REASONING`, `CODE`, `VERIFY`, `ASSUMPTIONS`, and `ACTION`. The `CHARACTERIZATION` section must include at least one `INVARIANT:` line, and the persona prompt in `backend/personas.py` documents the exact formatting expected from the model.
 
 When you are ready to begin the backend engineering phase, follow this roadmap:
 

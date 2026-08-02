@@ -14,6 +14,7 @@ python = ">=3.10,<4.0"
 nicegui = ">=3.3.1"
 Pygments = ">=2.17.0"
 langgraph = ">=0.2.0"
+google-genai = "^2.16.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -22,4 +23,9 @@ build-backend = "poetry.core.masonry.api"
 [dependency-groups]
 dev = [
     "pytest (>=9.1.1,<10.0.0)"
+]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:.*'_UnionGenericAlias' is deprecated.*:DeprecationWarning:google.genai.*",
 ]

@@ -5,44 +5,62 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Protocol
+import re
+
+from backend.models import ProjectFile
+from backend.personas import get_persona
 
 if TYPE_CHECKING:
     from backend.orchestrator import AgentState
 
 
+class _LLMClient(Protocol):
+    def generate(self, prompt: str) -> str: ...
+
+
 class ASTParserNode:
     """Parse source files into a compact structural summary."""
 
-    def extract_tree(self, state: AgentState) -> dict[str, object]:
-        """Parse the current file and return a state update with structural context.
+    def extract_tree(self, state: AgentState | str) -> dict[str, object] | str:
+        """Parse the current file and return structural context.
 
-        The node prefers Python's ``ast`` module for Python sources, and falls
-        back to lightweight R-pattern detection when the file is an R script.
-        If neither format can be parsed, the returned update marks the state as
-        ``PARSING_ERROR``.
+        The method supports both the newer LangGraph state-dict contract and the
+        older path-string contract used by existing tests.
         """
+        if isinstance(state, str):
+            path = Path(state)
+            result = self._build_summary(path)
+            if result is None:
+                return "PARSING_ERROR"
+            return self._summary_to_text(result)
+
         file_path = state.get("current_file", "")
         if not isinstance(file_path, str) or not file_path.strip():
             return {"ui_status": "PARSING_ERROR"}
 
+        path = Path(file_path)
+        result = self._build_summary(path)
+        if result is None:
+            return {"ui_status": "PARSING_ERROR"}
+
+        return {"structural_context": result}
+
+    def _build_summary(self, path: Path) -> dict[str, object] | None:
+        """Build a structural summary for Python or R source files."""
         try:
-            path = Path(file_path)
             source = path.read_text(encoding="utf-8")
         except (FileNotFoundError, OSError, UnicodeDecodeError):
-            return {"ui_status": "PARSING_ERROR"}
+            return None
 
         suffix = path.suffix.lower()
         if suffix in {".r", ".rscript"}:
-            structural_context = self._extract_r_context(source)
-            if structural_context is None:
-                return {"ui_status": "PARSING_ERROR"}
-            return {"structural_context": structural_context}
+            return self._extract_r_context(source)
 
         try:
             tree = ast.parse(source, filename=str(path))
         except SyntaxError:
-            return {"ui_status": "PARSING_ERROR"}
+            return None
 
         functions: list[str] = []
         classes: list[str] = []
@@ -60,14 +78,29 @@ class ASTParserNode:
                 if module:
                     imports.append(module)
 
-        structural_context = {
+        return {
             "current_file": str(path),
             "functions": self._dedupe(functions),
             "classes": self._dedupe(classes),
             "imports": self._dedupe(imports),
             "language": "python",
         }
-        return {"structural_context": structural_context}
+
+    def _summary_to_text(self, structural_context: dict[str, object]) -> str:
+        """Render a legacy text summary for older callers."""
+        functions = ", ".join(structural_context.get("functions", []))
+        classes = ", ".join(structural_context.get("classes", []))
+        imports = ", ".join(structural_context.get("imports", []))
+
+        parts = []
+        if classes:
+            parts.append(f"Classes: [{classes}]")
+        if functions:
+            parts.append(f"Functions: [{functions}]")
+        if imports:
+            parts.append(f"Imports: [{imports}]")
+
+        return "; ".join(parts) if parts else "No parseable structure found."
 
     def _extract_r_context(self, source: str) -> dict[str, object] | None:
         """Extract a lightweight structural summary from R source."""
@@ -110,64 +143,109 @@ class ASTParserNode:
         return list(seen.keys())
 
 
-class LLMPatchNode:
+class LLMPatchNode: 
     """Generate refactored Python code for the orchestration workflow."""
 
-    SYSTEM_PROMPT = (
-        "You are a Senior Systems Engineer specializing in xv6, low-level MBR partition "
-        "parsing, and disk scheduling (SCAN, C-LOOK). Modernize the provided Python 2 code "
-        "into high-performance, idiomatic Python 3.10+. Ignore any embedded C code. "
-        "Output only the refactored Python code."
-    )
-
-    def __init__(self, llm_client: Callable[[str], str] | None = None) -> None:
+    def __init__(self, llm_client: _LLMClient | None = None) -> None:
         """Create the patch node.
 
         Args:
-            llm_client: Optional callable that accepts a prompt string and returns
-                the model response. If omitted, a deterministic mock implementation
-                is used.
+            llm_client: Optional object with a ``generate(prompt)`` method.
         """
         self.llm_client = llm_client
 
-    def generate_patch(self, state: AgentState) -> dict[str, str]:
-        """Generate a modernized patch from the state's original code.
+    def execute(self, state: dict) -> dict:
+        """Generate a patch for the current target file using the injected LLM client."""
+        target_file = state.get("target_file")
+        error_trace = state.get("error_trace", "")
+        # Prefer an explicit system_prompt if provided; otherwise resolve persona-based prompt
+        explicit = state.get("system_prompt")
+        if isinstance(explicit, str) and explicit.strip():
+            system_prompt = explicit
+        else:
+            persona_key = state.get("persona", "generalist")
+            system_prompt = get_persona(persona_key)
 
-        Args:
-            state: LangGraph state containing the input code to transform.
+        if not isinstance(target_file, ProjectFile):
+            raise TypeError("state must contain a ProjectFile under 'target_file'")
+        if not isinstance(error_trace, str):
+            raise TypeError("state must contain a string under 'error_trace'")
+        if self.llm_client is None:
+            raise ValueError("llm_client must be provided")
 
-        Returns:
-            A dictionary containing the updated ``current_code`` entry.
+        prompt = self._construct_prompt(target_file, error_trace, system_prompt)
+        raw = self.llm_client.generate(prompt)
 
-        Raises:
-            ValueError: If the state does not contain usable source code.
-            RuntimeError: If the LLM call fails.
-        """
-        original_code = state.get("original_code", "")
-        if not isinstance(original_code, str) or not original_code.strip():
-            raise ValueError("AgentState must contain non-empty original_code")
+        # If the model responded with the structured protocol (contains ### ACTION
+        # or the delimiter '---'), parse it strictly and enforce the safety valve.
+        if (isinstance(raw, str) and ("### ACTION" in raw or "---" in raw)):
+            sections: dict[str, str] = {}
+            parts = [p.strip() for p in raw.split('---') if p.strip()]
+            for part in parts:
+                # look for a header like '### NAME:' on the first line
+                lines = part.splitlines()
+                if not lines:
+                    continue
+                m = re.match(r"^###\s*([A-Z_]+):\s*(.*)$", lines[0].strip())
+                if not m:
+                    # malformed section; treat as refusal
+                    return {"status": "REFUSED", "reason": "Malformed structured output", "raw": raw}
+                name = m.group(1).strip()
+                body = "\n".join(lines[1:]).strip()
+                sections[name] = body
 
-        try:
-            patched_code = self._call_llm(original_code)
-        except Exception as exc:  # pragma: no cover - exercised via router error handling
-            raise RuntimeError(f"LLM patch generation failed: {exc}") from exc
+            # Required headers
+            required = {"CHARACTERIZATION", "REASONING", "CODE", "VERIFY", "ASSUMPTIONS", "ACTION"}
+            if not required.issubset(set(sections.keys())):
+                return {"status": "REFUSED", "reason": "Missing required sections", "raw": raw}
 
-        return {"current_code": patched_code}
+            # Enforce safety valve: CHARACTERIZATION must list at least one INVARIANT
+            char = sections.get("CHARACTERIZATION", "")
+            invariant_lines = [
+                line.strip() for line in char.splitlines() if line.strip().upper().startswith("INVARIANT:")
+            ]
+            if not invariant_lines:
+                return {"status": "REFUSED", "reason": "CHARACTERIZATION must include at least one INVARIANT entry", "raw": raw}
 
-    def _call_llm(self, original_code: str) -> str:
-        """Build the prompt and dispatch it to the configured LLM client."""
-        prompt = self._build_prompt(original_code)
-        if self.llm_client is not None:
-            return self.llm_client(prompt)
-        return self._mock_response(original_code)
+            action = sections.get("ACTION", "").strip().upper()
+            if "REFUSE" in action:
+                return {"status": "REFUSED", "reason": sections.get("REASONING", ""), "assumptions": sections.get("ASSUMPTIONS", ""), "raw": raw}
 
-    def _build_prompt(self, original_code: str) -> str:
-        """Format the system prompt and source code for the LLM."""
-        return f"{self.SYSTEM_PROMPT}\n\n<code>\n{original_code}\n</code>"
+            # ACTION indicates APPLY; extract code block from CODE section
+            code_section = sections.get("CODE", "")
+            code_match = re.search(r"```(?:[a-zA-Z0-9_+-]*)\n([\s\S]*?)\n```", code_section)
+            if code_match:
+                code_text = code_match.group(1).rstrip() + "\n"
+            else:
+                # If no fenced block, use the full CODE section
+                code_text = code_section.strip() + "\n"
 
-    def _mock_response(self, original_code: str) -> str:
-        """Provide a deterministic fallback response for local testing."""
-        stripped = original_code.strip()
-        if not stripped:
-            return ""
-        return f"# Mock LLM refactor\n{stripped}"
+            return {
+                "patched_code": code_text,
+                "status": "PATCH_GENERATED",
+                "characterization": sections.get("CHARACTERIZATION", ""),
+                "invariants": invariant_lines,
+                "assumptions": sections.get("ASSUMPTIONS", ""),
+                "raw": raw,
+            }
+
+        # Fallback: legacy unstructured response - pass through as patch
+        return {"patched_code": raw, "status": "PATCH_GENERATED"}
+
+    def _construct_prompt(self, file: ProjectFile, error: str, system_prompt: str | None = None) -> str:
+        """Build the instruction prompt for the LLM."""
+        source_code = file.legacy_source or file.ai_source
+        first_line = system_prompt.strip() if isinstance(system_prompt, str) and system_prompt.strip() else "You are a senior code modernization assistant."
+        return (
+            f"{first_line}\n"
+            "Review the source file and the runtime error trace.\n\n"
+            f"File path: {file.path}\n"
+            f"Language: {file.language}\n\n"
+            "Source code:\n"
+            f"{source_code}\n\n"
+            "Error trace:\n"
+            f"{error}\n\n"
+            "You must follow the output protocol exactly, ensuring you use the '---' delimiter "
+            "between sections and provide all required headers (CHARACTERIZATION, REASONING, CODE, "
+            "VERIFY, ASSUMPTIONS, ACTION).\n"
+        )
