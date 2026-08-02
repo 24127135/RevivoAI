@@ -1,17 +1,22 @@
 import asyncio
 import html
+import os
 import time
 from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog
 
 from nicegui import ui, app, events, background_tasks
 
 # Import from backend
+from backend.mcp_client import MCPClient
 from backend.models import FileStatus, STATUS_META, WARNING_STATUSES, ProjectFile
 from backend.logic import (
     parse_traceback, compute_anchors, group_frames_for_disclosure,
 )
 from backend.seed import build_seed_files
 from backend.import_utils import import_from_uploads, import_local_project
+from backend.session_handler import SessionHandler
 
 # Import from frontend
 from frontend.styles import get_css
@@ -28,18 +33,18 @@ class AppState:
         self.files: dict[str, ProjectFile] = {}
         self.drawer = None
         self.active_buffer: str | None = None
-        self.batch_selection: set[str] = set()
         self.expanded_folders: set[str] = {"controllers", "models", "views", "analytics", "FS"}
         self.diff_state: dict[str, str] = {}        
         self.edit_buffer: dict[str, str] = {}        
         self.trace_expanded: dict[str, bool] = {}     
         self.show_full_trace: dict[str, bool] = {}    
-        self.batch_feedback: dict | None = None   
         self.rejecting: dict[str, bool] = {}          
         self.import_mode: str | None = None
+        self.project_root: str | None = None
+        self.mcp_client: MCPClient | None = None
+        self.session_handler: SessionHandler | None = None
         
         # Sidebar filters
-        self.batch_mode: bool = False
         self.search_query: str = ""
         self.status_filter: str = "All"
         self.module_filter: str = "All"
@@ -61,6 +66,45 @@ def load_demo_project():
     state.active_buffer = files[0].file_id
     state.import_mode = None
     refresh_all()
+
+async def pick_directory_async():
+    def pick():
+        root = tk.Tk()
+        root.attributes("-topmost", True)
+        root.withdraw()
+        folder = filedialog.askdirectory()
+        root.destroy()
+        return folder
+    return await asyncio.to_thread(pick)
+
+async def handle_native_import_project():
+    folder = await pick_directory_async()
+    if folder:
+        try:
+            imported_files = import_local_project(folder)
+            if imported_files:
+                for f in imported_files:
+                    state.files[f.file_id] = f
+                state.active_buffer = imported_files[0].file_id
+                state.project_root = folder
+                state.import_mode = None
+                
+                # Asynchronously pass the path to SessionHandler
+                state.session_handler = SessionHandler()
+                asyncio.create_task(state.session_handler.initialize_session(folder))
+                
+                # Asynchronously pass the path to MCPClient
+                state.mcp_client = MCPClient(server_uri="local://revivoai", allowed_root_path=folder)
+                async def connect_mcp():
+                    await asyncio.sleep(0.1) # Simulate async delay
+                    state.mcp_client.connect()
+                asyncio.create_task(connect_mcp())
+                
+                refresh_all()
+            else:
+                show_alert("No readable source files found in that directory.", alert_type='warning')
+        except ValueError:
+            show_alert("Directory not found. Check the path and try again.", alert_type='negative')
 
 # ============================================================================
 # STATE HELPERS
@@ -127,19 +171,6 @@ def set_active_buffer(file_id: str):
     state.fullscreen_mode = None
     refresh_all()
 
-def clear_batch_selection():
-    state.batch_selection = set()
-
-def toggle_batch_selection(file_id: str, checked: bool):
-    if checked: state.batch_selection.add(file_id)
-    else: state.batch_selection.discard(file_id)
-
-def toggle_folder_selection(folder_files: list[ProjectFile], checked: bool):
-    for f in folder_files: 
-        if checked: state.batch_selection.add(f.file_id)
-        else: state.batch_selection.discard(f.file_id)
-    refresh_all()
-
 def transition_to_sandbox(file_id: str):
     f = get_file(file_id)
     f.status = FileStatus.SANDBOX_TESTING
@@ -182,10 +213,33 @@ def resolve_sandbox_now(file_id: str):
 
 def approve_file(file_id: str):
     f = get_file(file_id)
-    if f.status == FileStatus.PASSED: 
+    if f.status != FileStatus.PASSED:
+        return
+
+    # FILES-mode imports have no directory root — fall back to a local output folder.
+    root = state.project_root or str(Path.cwd() / "revivo_workspace")
+    os.makedirs(root, exist_ok=True)
+
+    client = MCPClient(server_uri="local://revivoai", allowed_root_path=root)
+    client.connect()
+    push_log(file_id, f"[MCP] Writing to '{f.path}' under '{root}'...")
+
+    try:
+        success = client.writeFile(f.path, f.ai_source)
+    except PermissionError as e:
+        show_alert(f"MCP write blocked: {e}", alert_type='negative')
+        push_log(file_id, f"[MCP] 🔴 Write blocked — {e}")
+        client.disconnect()
+        return
+    client.disconnect()
+
+    if success:
         f.status = FileStatus.APPROVED
-        show_alert(f"MCP Action: Overwriting local host file '{f.path}' with verified AI patch...", alert_type='positive')
+        show_alert(f"MCP Action: Wrote verified patch to '{f.path}'", alert_type='positive')
         push_log(file_id, f"[MCP] 🟢 Local file '{f.path}' successfully overwritten.")
+    else:
+        show_alert(f"MCP write failed for '{f.path}'. See logs.", alert_type='negative')
+        push_log(file_id, f"[MCP] 🔴 writeFile() returned False for '{f.path}'.")
 
 def reject_file(file_id: str, note: str):
     f = get_file(file_id)
@@ -207,12 +261,9 @@ def save_and_retest(file_id: str, widget_value: str):
     push_log(file_id, "[User Action] Manual patch edit submitted. Restarting execution...")
     asyncio.create_task(simulate_sandbox(file_id))
 
-def export_approved(): 
-    return [f for f in state.files.values() if f.status == FileStatus.APPROVED]
-
 def refresh_all():
     if getattr(state, 'drawer', None) is not None:
-        if state.files or state.import_mode:
+        if state.files and not state.import_mode:
             state.drawer.set_visibility(True)
             state.drawer.show()  # <-- Forces the layout to expand
         else:
@@ -333,7 +384,7 @@ def render_welcome():
             </div>
         ''')
         
-        with ui.row().classes('w-full max-w-4xl justify-center gap-8 px-4'):
+        with ui.row().classes('w-full max-w-5xl justify-center gap-8 px-4'):
             if state.import_mode == "FILES":
                 with ui.column().classes('w-full max-w-lg'):
                     ui.markdown("### Upload Files")
@@ -349,46 +400,24 @@ def render_welcome():
                     with ui.row().classes('w-full gap-4 mt-4'):
                         ui.button("Cancel", on_click=lambda: (setattr(state, 'import_mode', None), refresh_all())).classes('flex-1')
                         
-            elif state.import_mode == "PROJECT":
-                with ui.column().classes('w-full max-w-lg'):
-                    ui.markdown("### Scan Local Directory")
-                    path_input = ui.input("Absolute Path").props('placeholder="e.g., C:/Projects/legacy_app"').classes('w-full')
-                    
-                    def handle_scan():
-                        try:
-                            imported_files = import_local_project(path_input.value)
-                            if imported_files:
-                                state.files = {f.file_id: f for f in imported_files}
-                                state.active_buffer = imported_files[0].file_id
-                                state.import_mode = None
-                                refresh_all()
-                            else:
-                                show_alert("No readable source files found in that directory.", alert_type='warning')
-                        except ValueError:
-                            show_alert("Directory not found. Check the path and try again.", alert_type='negative')
-                            
-                    with ui.row().classes('w-full gap-4 mt-4'):
-                        ui.button("🚀 Scan Directory", on_click=handle_scan).props('color=primary').classes('flex-1')
-                        ui.button("Cancel", on_click=lambda: (setattr(state, 'import_mode', None), refresh_all())).classes('flex-1')
-                        
             else:
                 with ui.column().classes('w-full items-center pt-16'):
-                    with ui.row().classes('w-full max-w-5xl justify-center items-stretch gap-8 mb-8'):
+                    with ui.row().classes('w-full max-w-7xl justify-center items-stretch gap-8 mb-8'):
                         
                         # Added `welcome-import-card` for our aggressive CSS override target
                         with ui.card().classes(
                             'welcome-import-card flex-1 cursor-pointer flex flex-col items-center justify-center text-center '
                             'border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-8'
                         ) as card1:
-                            ui.html('<div class="font-black whitespace-nowrap text-2xl">IMPORT FILES</div><div class="text-sm mt-4 font-bold">Pick one or more individual source files to translate.</div>')
+                            ui.html('<div class="welcome-import-title">IMPORT FILES</div><div class="welcome-import-desc">Select individual source files to translate. Best for targeting a few specific files.</div>')
                             card1.on('click', lambda: (setattr(state, 'import_mode', "FILES"), refresh_all()))
                             
                         with ui.card().classes(
                             'welcome-import-card flex-1 cursor-pointer flex flex-col items-center justify-center text-center '
                             'border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-8'
                         ) as card2:
-                            ui.html('<div class="font-black whitespace-nowrap text-2xl">IMPORT PROJECT</div><div class="text-sm mt-4 font-bold">Scans local directory trees directly from disk.</div>')
-                            card2.on('click', lambda: (setattr(state, 'import_mode', "PROJECT"), refresh_all()))
+                            ui.html('<div class="welcome-import-title">IMPORT PROJECT</div><div class="welcome-import-desc">Scan a local directory tree for source files. Best for translating an entire codebase.</div>')
+                            card2.on('click', handle_native_import_project)
                             
                     ui.html('<div class="text-gray-400 font-bold mb-8">--- OR ---</div>')
                     
@@ -416,11 +445,11 @@ def render_sidebar():
                     'hover:after:h-full focus:ring-2 focus:ring-yellow-300 focus:outline-0 border border-gray-300 hover:border-black'
                 )
                 
-                f_btn = ui.element('div').classes(btn_cls).on('click', lambda: (setattr(state, 'import_mode', "FILES"), state.files.clear(), refresh_all()))
+                f_btn = ui.element('div').classes(btn_cls).on('click', lambda: (setattr(state, 'import_mode', "FILES"), refresh_all()))
                 with f_btn:
                     ui.label('+ Files').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
                     
-                p_btn = ui.element('div').classes(btn_cls).on('click', lambda: (setattr(state, 'import_mode', "PROJECT"), state.files.clear(), refresh_all()))
+                p_btn = ui.element('div').classes(btn_cls).on('click', handle_native_import_project)
                 with p_btn:
                     ui.label('+ Project').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
             
@@ -462,13 +491,6 @@ def render_sidebar():
                         
                         if is_expanded:
                             with ui.column().classes('w-full pl-2 gap-0'):
-                                if state.batch_mode:
-                                    folder_checked = all(f.file_id in state.batch_selection for f in visible)
-                                    def on_folder_check(e, f_list=visible):
-                                        toggle_folder_selection(f_list, e.value)
-                                        render_sidebar.refresh()
-                                    ui.checkbox(f"Select all in '{folder}'", value=folder_checked, on_change=on_folder_check).classes('ml-2')
-
                                 for i, f in enumerate(visible):
                                     meta = STATUS_META.get(f.status, {"icon": "❓", "label": "UNKNOWN", "color": "gray"})
                                     is_active = state.active_buffer == f.file_id
@@ -481,113 +503,113 @@ def render_sidebar():
                                     font_weight = 'font-bold' if is_active else 'font-normal'
                                     
                                     with ui.row().classes('w-full items-center wrap-none gap-0'):
-                                        if state.batch_mode:
-                                            checked = f.file_id in state.batch_selection
-                                            def on_file_check(e, fid=f.file_id):
-                                                toggle_batch_selection(fid, e.value)
-                                                render_sidebar.refresh()
-                                            ui.checkbox(value=checked, on_change=on_file_check).classes('mr-2')
-                                        
                                         btn = ui.button(button_label, on_click=lambda e, fid=f.file_id: set_active_buffer(fid))
                                         btn.props(f'{bg_props} align="left" text-color="{text_color}" no-caps dense').classes(f'flex-1 truncate {font_weight}')
 
         # 3. FIXED FOOTER
         with ui.column().classes('w-full p-4 border-t border-gray-200 bg-gray-50 mt-auto'):
-            if not state.batch_mode and not state.batch_selection:
-                def on_export():
-                    approved = export_approved()
-                    if approved: show_alert(f"Exported {len(approved)} approved file(s)", alert_type='positive')
-                    else: show_alert("No approved files to export yet.", alert_type='warning')
-                btn = ui.element('div').classes(
-                    'group relative w-full bg-white px-5 py-3 font-semibold text-black text-center cursor-pointer '
-                    'after:absolute after:inset-x-0 after:bottom-0 after:h-1 after:bg-black '
-                    'transition-all duration-200 after:transition-all after:duration-200 '
-                    'hover:after:h-full focus:ring-2 focus:ring-yellow-300 focus:outline-0 border border-gray-300 hover:border-black'
-                ).on('click', on_export)
-                with btn:
-                    ui.label('⬇ Export All Approved').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
-            elif state.batch_mode:
-                ui.markdown(f"**{len(state.batch_selection)} file(s) selected**")
-                with ui.row().classes('w-full gap-2'):
-                    ui.button("🚀 Trans.", on_click=lambda: execute_batch("translate")).classes('flex-1').props('size=sm')
-                    ui.button("✅ Appr.", on_click=lambda: execute_batch("approve")).classes('flex-1').props('size=sm')
-                with ui.row().classes('w-full gap-2 mt-2'):
-                    ui.button("🔄 Re-run", on_click=lambda: execute_batch("rerun")).classes('flex-1').props('size=sm')
-                    ui.button("✕ Clear", on_click=lambda: (clear_batch_selection(), render_sidebar.refresh())).classes('flex-1').props('size=sm')
+            with ui.dialog() as confirm_dialog, ui.card():
+                ui.label('Clear Workspace?').classes('text-lg font-bold')
+                ui.label('This will remove all files from the current session. Unsaved changes will be lost.')
+                with ui.row().classes('w-full justify-end mt-4'):
+                    ui.button('Cancel', on_click=confirm_dialog.close).props('flat')
+                    def do_clear():
+                        state.files.clear()
+                        state.active_buffer = None
+                        state.project_root = None
+                        state.import_mode = None
+                        confirm_dialog.close()
+                        refresh_all()
+                    ui.button('Clear', on_click=do_clear).props('color=negative')
 
-def execute_batch(action: str):
-    sel = list(state.batch_selection)
-    ok, skipped = [], []
-    for fid in sel:
-        f = get_file(fid)
-        if action == "translate":
-            if f.status == FileStatus.QUEUED:
-                run_translation_simulation(fid)
-                ok.append(fid)
-            else: skipped.append((fid, f.status))
-        elif action == "approve":
-            if f.status == FileStatus.PASSED:
-                f.status = FileStatus.APPROVED
-                ok.append(fid)
-            else: skipped.append((fid, f.status))
-        elif action == "rerun":
-            if f.status in (FileStatus.FAILED, FileStatus.EDITED_PENDING):
-                f.status = FileStatus.SANDBOX_TESTING
-                resolve_sandbox_now(fid)
-                ok.append(fid)
-            else: skipped.append((fid, f.status))
-            
-    state.batch_feedback = {"action": action, "ok": ok, "skipped": skipped}
-    clear_batch_selection()
-    refresh_all()
+            btn = ui.element('div').classes(
+                'group relative w-full bg-white px-4 py-2 font-semibold text-red-500 text-center cursor-pointer '
+                'after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-red-500 '
+                'transition-all duration-200 after:transition-all after:duration-200 '
+                'hover:after:h-full focus:ring-2 focus:ring-red-300 focus:outline-0 border border-gray-300 hover:border-red-500 mt-2'
+            ).on('click', confirm_dialog.open)
+            with btn:
+                ui.label('🗑️ Clear Workspace').classes('relative z-10 pointer-events-none block group-hover:text-black transition-colors duration-200')
 
 # ============================================================================
 # STATE MACHINE TRACKER (UI COMPONENT)
 # ============================================================================
-def render_state_machine_tracker(current_state: str, show_rerun: bool = False, rerun_callback=None):
+def render_segmented_status_header(f: ProjectFile, current_state: str, progress: int = 50, show_rerun: bool = False, rerun_callback=None):
     nodes = ["Analyze", "Propose", "Execute", "Evaluate"]
     
-    # Compact, single-line stepper layout
-    with ui.row().classes('w-full items-center justify-between bg-white py-2 px-6 border-t-2 border-black overflow-hidden flex-nowrap'):
-        with ui.row().classes('items-center gap-3 sm:gap-4 overflow-hidden'):
-            for i, node in enumerate(nodes):
-                node_idx = nodes.index(node)
-                
-                if current_state in nodes:
-                    curr_idx = nodes.index(current_state)
-                elif current_state == "Done":
-                    curr_idx = 999 
-                else:
-                    curr_idx = -1  
-                    
-                if node_idx < curr_idx:
-                    color = "bg-green-500 text-white border-green-700"
-                    icon = "✓"
-                elif node_idx == curr_idx:
-                    color = "bg-yellow-400 text-black border-yellow-600 animate-pulse"
-                    icon = "▶"
-                else:
-                    color = "bg-gray-100 text-gray-400 border-gray-300"
-                    icon = "·"
-                
-                with ui.row().classes('items-center gap-2 wrap-none m-0 p-0'):
-                    ui.label(icon).classes(f'flex items-center justify-center w-5 h-5 rounded-full font-bold border-2 text-xs {color}')
-                    text_color = "text-black" if node_idx <= curr_idx else "text-gray-400"
-                    ui.label(node).classes(f'font-bold text-xs uppercase tracking-wide {text_color} m-0 p-0')
-                
-                # Simple arrow separator instead of large progress bars
-                if i < len(nodes) - 1:
-                    ui.label("→").classes('text-gray-300 font-bold text-xs m-0 p-0')
-                
+    if current_state in nodes:
+        currentStep = nodes.index(current_state)
+    elif current_state == "Done":
+        currentStep = 4
+    else:
+        currentStep = -1
+
+    if f.status in (FileStatus.QUEUED, FileStatus.EDITED_PENDING):
+        theme_color = "#d1d5db"
+        text_color = "var(--neo-black)"
+        badge_label = "QUEUED" if f.status == FileStatus.QUEUED else "EDITED"
+    elif f.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
+        theme_color = "var(--neo-green)"
+        text_color = "var(--neo-black)"
+        badge_label = "RUNNING"
+    elif f.status in (FileStatus.PASSED, FileStatus.APPROVED):
+        theme_color = "var(--neo-green)"
+        text_color = "var(--neo-black)"
+        badge_label = "DONE"
+    elif f.status in (FileStatus.FAILED, FileStatus.REJECTED):
+        theme_color = "var(--neo-red)"
+        text_color = "var(--neo-white)"
+        badge_label = "FAILED"
+    else:
+        theme_color = "#d1d5db"
+        text_color = "var(--neo-black)"
+        badge_label = "UNKNOWN"
+
+    segments_html = ""
+    for i, node in enumerate(nodes):
+        if i < currentStep:
+            # Done
+            dot = f'<div class="w-2 h-2 rounded-full mx-auto" style="background-color: {theme_color}; border: 1.5px solid var(--neo-black);"></div>'
+            label_class = "font-bold text-black"
+            fill = 100
+        elif i == currentStep:
+            # Active
+            dot = f'<div class="w-2 h-2 rounded-full mx-auto" style="background-color: {theme_color}; border: 1.5px solid var(--neo-black);"></div>'
+            label_class = "font-bold text-black"
+            fill = progress
+        else:
+            # Pending
+            dot = ""
+            label_class = "font-medium text-gray-400"
+            fill = 0
+            
+        segments_html += f'''
+        <div class="flex flex-col flex-1 relative">
+            <div class="h-2 mb-2">{dot}</div>
+            <div class="text-center font-mono text-sm uppercase mb-2 {label_class}">{node}</div>
+            <div class="w-full h-4 overflow-hidden bg-gray-200" style="border: 2px solid var(--neo-black); border-radius: 6px;">
+                <div class="h-full transition-all duration-300" style="background-color: {theme_color}; width: {fill}%; border-right: 2px solid var(--neo-black);"></div>
+            </div>
+        </div>
+        '''
+
+    with ui.column().classes('w-full border-[3px] border-black bg-[#fafafa] p-4 mb-6 gap-0'):
         if show_rerun and rerun_callback:
-            ui.button("Re-run Sandbox", on_click=rerun_callback).props('color=blue').classes('w-auto flex-shrink-0')
+            with ui.row().classes('w-full justify-end items-center mb-2 flex-nowrap'):
+                ui.button("Re-run", on_click=rerun_callback).props('outline size=sm').classes('mr-1')
+        
+        ui.html(f'''
+        <div class="flex w-full gap-4 mt-2">
+            {segments_html}
+        </div>
+        ''').classes('w-full')
 
 # ============================================================================
 # MAIN CONTENT VIEWER
 # ============================================================================
 @ui.refreshable
 def render_main():
-    if not state.files:
+    if not state.files or state.import_mode:
         render_welcome()
         return
         
@@ -652,42 +674,20 @@ def render_main():
                     height='calc(100vh - 56px)'
                 ).classes('w-full').style('height:calc(100vh - 56px); overflow:hidden;')
         return
+
+    # Embedded LANGGRAPH TRACKER (Segmented Bar)
+    curr_state = state.agent_state.get(active_id, "Done" if f.status != FileStatus.QUEUED else "Idle")
+    show_rerun = f.status in (FileStatus.FAILED, FileStatus.EDITED_PENDING)
     
-    if state.batch_feedback:
-        fb = state.batch_feedback
-        verb = "queued for AI translation" if fb["action"] == "translate" else "approved" if fb["action"] == "approve" else "queued for re-run"
-        lines = [f'✅ {len(fb["ok"])} files {verb}.']
-        if fb["skipped"]:
-            lines.append(f'⚠️ {len(fb["skipped"])} skipped - not eligible:')
-            for fid, st_val in fb["skipped"]:
-                sf = get_file(fid)
-                lines.append(f'&nbsp;&nbsp;&nbsp;• {sf.filename} ({STATUS_META.get(st_val, {}).get("icon", "")} {STATUS_META.get(st_val, {}).get("label", "")})')
-        
-        with ui.row().classes('w-full mb-6 items-start feedback-banner justify-between'):
-            ui.html("<br>".join(lines))
-            ui.button("Dismiss", on_click=lambda: (setattr(state, 'batch_feedback', None), render_main.refresh())).props('flat')
-
-    # CARD 1: File Overview & Pipeline State (Merged, standard neo-card style)
-    with ui.column().classes('w-full neo-card neo-card-light p-0 mb-6 overflow-hidden'):
-        ui.html(f'''
-        <div class="neo-card-header bleed border-b-0">
-            <div class="header-left">
-                <div class="neo-card-title-group">
-                    {f.path}
-                </div>
-                <div class="header-desc">Current active file context, execution status overview, and pipeline state.</div>
-            </div>
-            <div class="stat-pill {f_color}">
-                {meta["label"]}
-            </div>
-        </div>
-        ''').classes('w-full')
-
-        # Embedded LANGGRAPH TRACKER
-        curr_state = state.agent_state.get(active_id, "Done" if f.status != FileStatus.QUEUED else "Idle")
-        show_rerun = f.status in (FileStatus.FAILED, FileStatus.EDITED_PENDING)
-        render_state_machine_tracker(
-            current_state=curr_state, 
+    # Calculate simulated progress based on internal states if translating
+    total_phases = len(TRANSLATING_PHASES.get(f.persona, TRANSLATING_PHASES["general"]))
+    simulated_progress = int((state.thinking_phase / total_phases) * 100) if total_phases > 0 and f.status == FileStatus.TRANSLATING else 50
+    
+    if f.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
+        render_segmented_status_header(
+            f=f,
+            current_state=curr_state,
+            progress=simulated_progress,
             show_rerun=show_rerun, 
             rerun_callback=lambda: run_sandbox_simulation(active_id)
         )
@@ -697,7 +697,7 @@ def render_main():
     def render_terminal(is_half=False):
         width_class = "w-full" if not is_half else "flex-1"
         margin_class = "mt-2" if not is_half else "m-0"
-        height_class = "h-80" if is_half else "h-96"
+        height_class = "h-[500px]" if is_half else "h-[600px]"
         with ui.column().classes(f'{width_class} {margin_class} {height_class} border-4 border-black shadow-[4px_4px_0_0] shadow-black bg-gray-900 rounded-lg overflow-hidden flex flex-col flex-nowrap'):
             with ui.row().classes('w-full bg-black px-4 py-2 items-center justify-between border-b-2 border-gray-700 flex-shrink-0 flex-nowrap'):
                 ui.label("▶ LANGGRAPH EXECUTION TERMINAL").classes('text-green-400 font-mono text-sm font-bold truncate')
@@ -726,7 +726,7 @@ def render_main():
                 value=f.legacy_source,
                 language=f.language,
                 readonly=True,
-            ).classes('w-full').style('height:520px;')
+            ).classes('w-full').style('height:725px;')
         
     elif f.status == FileStatus.TRANSLATING:
         skip_to_action_bar = True
@@ -740,9 +740,9 @@ def render_main():
             else: rows_html.append(f'<div class="thinking-step step-pending"><span class="step-icon">·</span>{html.escape(p)}</div>')
             
         with ui.row().classes('w-full items-stretch gap-6 mb-6 flex-nowrap'):
-            with ui.column().classes('flex-1 h-80 neo-card neo-card-spotlight p-0 mb-0'):
+            with ui.column().classes('flex-1 h-[500px] neo-card neo-card-spotlight p-0 mb-0'):
                 ui.html('''
-                    <div class="neo-card-header bleed">
+                    <div class="neo-card-header">
                         <div class="header-left">
                             <div class="neo-card-title-group"><span class="thinking-pulse-dot"></span> GENERATING PATCH</div>
                             <div class="header-desc">LLM is parsing legacy code and writing modern replacement.</div>
@@ -765,9 +765,9 @@ def render_main():
             else: rows_html.append(f'<div class="thinking-step step-pending"><span class="step-icon">·</span>{html.escape(p)}</div>')
             
         with ui.row().classes('w-full items-stretch gap-6 mb-6 flex-nowrap'):
-            with ui.column().classes('flex-1 h-80 neo-card neo-card-spotlight p-0 mb-0'):
+            with ui.column().classes('flex-1 h-[500px] neo-card neo-card-spotlight p-0 mb-0'):
                 ui.html('''
-                    <div class="neo-card-header bleed">
+                    <div class="neo-card-header">
                         <div class="header-left">
                             <div class="neo-card-title-group"><span class="thinking-pulse-dot"></span> SANDBOX EXECUTION</div>
                             <div class="header-desc">Executing containerized test suite against generated patch.</div>
@@ -783,7 +783,7 @@ def render_main():
         diff_state_val = state.diff_state.get(active_id, "readonly")
         if diff_state_val == "editing":
             with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
-                with ui.row().classes('neo-card-header bleed compact-header w-full justify-between items-center'):
+                with ui.row().classes('neo-card-header compact-header w-full justify-between items-center'):
                     ui.html('''
                     <div class="flex items-center">
                         <div class="header-left">
@@ -807,19 +807,18 @@ def render_main():
                     readonly=False,
                     diff_mode=True,
                     on_change=on_monaco_change,
-                ).classes('w-full').style('height:520px; border-top: 3px solid var(--neo-black);')
+                ).classes('w-full').style('height:710px; border-top: 3px solid var(--neo-black);')
                 
                 with ui.row().classes('w-full p-4 gap-4 justify-end bg-white').style('border-top: 3px solid var(--neo-black);'):
                     ui.button("Cancel", on_click=lambda: (state.diff_state.update({active_id: "readonly"}), refresh_all())).props('outline')
                     ui.button("💾 Save & Re-test", on_click=lambda: (save_and_retest(active_id, state.edit_buffer.get(active_id, f.ai_source)), refresh_all())).props('color=primary')
         else:
             with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
-                with ui.row().classes('neo-card-header bleed compact-header w-full justify-between items-center'):
+                with ui.row().classes('neo-card-header compact-header w-full justify-between items-center'):
                     ui.html('''
                     <div class="flex items-center">
                         <div class="header-left">
                             <div class="neo-card-title-group">DIFF VIEWER</div>
-                            <div class="header-desc">Compare legacy code (left) with AI-generated patch (right).</div>
                         </div>
                         <div class="stat-pill blue">DIFF</div>
                     </div>
@@ -833,7 +832,7 @@ def render_main():
                     readonly=True,
                     diff_mode=True,
                     primary_line=f.primary_error_line,
-                ).classes('w-full')
+                ).classes('w-full').style('height:710px; border-top: 3px solid var(--neo-black);')
 
         if f.raw_traceback:
             frames = parse_traceback(f.raw_traceback, f.language, f.filename)
@@ -849,7 +848,7 @@ def render_main():
 
             with ui.column().classes('w-full neo-card p-0 mb-6'):
                 ui.html("""
-                <div class="neo-card-header bleed compact-header">
+                <div class="neo-card-header compact-header">
                     <div class="header-left">
                         <div class="neo-card-title-group">TRACEBACK CONSOLE</div>
                         <div class="header-desc">Sandbox execution failed. See actionable frames above.</div>
@@ -884,14 +883,7 @@ def render_main():
     if active_id in state.execution_logs and f.status not in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
         render_terminal(is_half=False)
 
-    if state.rejecting.get(active_id, False):
-        ui.markdown("**Rejection note**").classes('mt-8')
-        note_input = ui.textarea(value=f.rejection_note).classes('w-full').props('rows=3')
-        with ui.row().classes('w-full gap-4 mt-2'):
-            ui.button("Confirm Reject", on_click=lambda: (reject_file(active_id, note_input.value), refresh_all())).props('color=negative')
-            ui.button("Cancel", on_click=lambda: (state.rejecting.update({active_id: False}), render_main.refresh()))
-
-    if f.status == FileStatus.REJECTED and f.rejection_note and not state.rejecting.get(active_id, False):
+    if f.status == FileStatus.REJECTED and f.rejection_note:
         ui.label(f"🚫 Rejection note: {f.rejection_note}").classes('text-gray-400 mt-8 font-bold')
 
     # Embedded the Action Center directly in the page flow
@@ -912,6 +904,14 @@ def render_action_bar():
         pill_classes += ' animate-action-float'
         
     with ui.element('div').classes('fixed z-50').style('bottom: 24px; left: calc(50% + 175px); transform: translateX(-50%);'):
+        with ui.dialog() as reject_dialog, ui.card().classes('w-[400px]'):
+            ui.label("Reject Patch").classes('text-xl font-bold')
+            ui.label("Provide a reason for rejecting this AI patch:").classes('text-sm text-gray-500 mb-2')
+            note_input = ui.textarea(value=f.rejection_note, placeholder="Rejection note...").classes('w-full').props('rows=4 autofocus')
+            with ui.row().classes('w-full justify-end gap-2 mt-4'):
+                ui.button("Cancel", on_click=reject_dialog.close).props('flat')
+                ui.button("Confirm Reject", on_click=lambda: (reject_file(active_id, note_input.value), reject_dialog.close(), refresh_all())).props('color=negative')
+
         with ui.row().classes(pill_classes):
             if getattr(state, 'is_thinking', False):
                 with ui.row().classes('items-center gap-4'):
@@ -954,7 +954,7 @@ def render_action_bar():
                     btn3 = ui.button(btn_text, on_click=do_retest).props('unelevated rounded color=primary' if save_retest_primary else 'flat rounded color=grey-8').classes('action-pill-btn')
                     if disabled: btn3.disable()
                     
-                    btn4 = ui.button("Reject", on_click=lambda: (state.rejecting.update({active_id: True}), render_main.refresh())).props('unelevated rounded color=negative' if reject_eligible else 'flat rounded color=grey-8').classes('action-pill-btn')
+                    btn4 = ui.button("Reject", on_click=reject_dialog.open).props('unelevated rounded color=negative' if reject_eligible else 'flat rounded color=grey-8').classes('action-pill-btn')
                     if not reject_eligible: btn4.disable()
 
 # ============================================================================
