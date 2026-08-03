@@ -10,19 +10,33 @@ def _guess_lang(filename: str) -> str:
     if ext in ["r", "rmd"]: return "r"
     return "python" # Default fallback
 
-def import_from_uploads(upload_events: List[Any]) -> List[ProjectFile]:
+async def import_from_uploads(upload_events: List[Any]) -> List[ProjectFile]:
     """Takes files uploaded via NiceGUI's ui.upload and converts them to our data model."""
+    import inspect
     files = []
     for uf in upload_events:
-        # NiceGUI's upload event has a content attribute which is a file-like object
-        content = uf.content.read().decode("utf-8", errors="replace")
+        # Support both older NiceGUI (uf.content/uf.name) and newer NiceGUI (uf.name / uf.file)
+        if hasattr(uf, 'content'):
+            res = uf.content.read()
+        else:
+            res = uf.file.read()
+            
+        if inspect.isawaitable(res):
+            raw_bytes = await res
+        else:
+            raw_bytes = res
+            
+        content = raw_bytes.decode("utf-8", errors="replace")
+        
+        fname = getattr(uf, 'name', getattr(getattr(uf, 'file', None), 'name', getattr(getattr(uf, 'file', None), 'filename', 'unknown_file')))
+        
         files.append(ProjectFile(
             file_id=f"f_{uuid.uuid4().hex[:8]}",
-            path=uf.name,
+            path=fname,
             legacy_source=content,
             ai_source="",  # AI hasn't processed it yet
             status=FileStatus.QUEUED, # Starts in the queue!
-            language=_guess_lang(uf.name)
+            language=_guess_lang(fname)
         ))
     return files
 
