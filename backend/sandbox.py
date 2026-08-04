@@ -27,6 +27,7 @@ class DockerSandboxManager:
 
         self._run_as_non_root = True
         self._container = None
+        self._WORKSPACE_ROOT = "/workspace"
 
     def mountVolume(self, hostPath: str, containerPath: str, readOnly: bool = True) -> None:
         """
@@ -43,8 +44,9 @@ class DockerSandboxManager:
         self._image_name = image
         try:
             mem_limit_str = f"{self._memory_limit_mb}m"
-            user_config = "1000:1000" if self._run_as_non_root else "root"
 
+            # Start the background sleeper process as root so we can configure permissions.
+            # (The untrusted code in runScript will still securely execute as user 1000).
             self._container = self._client.containers.run(
                 image=self._image_name,
                 command="/bin/sh -c 'while true; do sleep 3600; done'",
@@ -52,17 +54,17 @@ class DockerSandboxManager:
                 mem_limit=mem_limit_str,
                 cpu_quota=self._cpu_quota,
                 cpu_period=self._cpu_period,
-                user=user_config,
+                user="root",  # <--- Start container daemon as root
                 network_mode="none",
+                working_dir=self._WORKSPACE_ROOT,
                 volumes=self._volume_mounts if self._volume_mounts else None
             )
             self._container_id = self._container.id
 
-            # One-time root init: prepare a workspace directory owned by the
-            # non-root user so per-file mkdir calls in injectCode() never need root.
+            # Hand over ownership of the workspace to the restricted non-root user
             if self._run_as_non_root:
                 self._container.exec_run(
-                    "mkdir -p /workspace && chown -R 1000:1000 /workspace",
+                    f"chown -R 1000:1000 {self._WORKSPACE_ROOT}",
                     user="root"
                 )
 
@@ -71,17 +73,18 @@ class DockerSandboxManager:
             print(f"[Sandbox Error] Cannot create container: {e}")
             return ""
 
-    _WORKSPACE_ROOT = "/workspace"
-
     def _validate_container_path(self, containerPath: str) -> str:
         """
-        Mirrors the role of MCPClient.validatePath() but scoped to the sandbox
-        filesystem: ensures containerPath resolves strictly inside the bounded
-        workspace root, rejecting '..' traversal and absolute escapes, and
-        returns the normalized absolute path to use for tar/mkdir.
+        Ensures containerPath resolves strictly inside the bounded workspace root.
+        Sanitizes absolute Windows host paths down to valid Linux basenames.
         """
         if not containerPath or not containerPath.strip():
             raise ValueError("containerPath must not be empty.")
+
+        # <--- Fix 2: Sanitize absolute Windows paths leaked from the host
+        containerPath = containerPath.replace('\\', '/')
+        if ":" in containerPath:
+            containerPath = containerPath.split("/")[-1]
 
         candidate = (
             containerPath
@@ -100,11 +103,7 @@ class DockerSandboxManager:
 
     def injectCode(self, containerPath: str, content: str) -> None:
         """
-        Bypasses circular dependency by pushing the candidate code directly into the
-        ephemeral container's isolated filesystem via a tarball stream.
-
-        containerPath is validated against the sandbox workspace root before any
-        filesystem operation is attempted (see _validate_container_path).
+        Pushes the candidate code directly into the ephemeral container's filesystem.
         """
         if not self._container:
             raise RuntimeError("Sandbox has not been initialized.")
@@ -124,30 +123,29 @@ class DockerSandboxManager:
         tar_stream.seek(0)
         dir_path = "/".join(safe_path.split('/')[:-1]) or "/"
         user_conf = "1000:1000" if self._run_as_non_root else "root"
-        self._container.exec_run(f"mkdir -p {dir_path}", user=user_conf)
+        
+        # Verify directory creation
+        exit_code, output = self._container.exec_run(f"mkdir -p {dir_path}", user=user_conf)
+        if exit_code != 0:
+            print(f"[Sandbox Warning] Failed to create directory {dir_path}: {output.decode('utf-8')}")
 
         self._container.put_archive(dir_path, tar_stream)
 
     def runScript(self, scriptPath: str, timeout_sec: int = 30) -> dict:
         """
         Executes the injected script asynchronously to prevent event loop blocking.
-        Enforces a hard kill on timeout (NFR-PERF-02).
-
-        CRITICAL LIFECYCLE WARNING:
-        If this method returns a 'TIMEOUT' status, the underlying container has been
-        forcefully killed (SIGKILL) to prevent orphaned processes. The container is
-        now dead. The caller MUST run destroySandbox() followed by createSandbox()
-        before attempting to inject or run any subsequent code.
         """
         if not self._container:
             return self._build_execution_log("FAILURE", -1, "", "Container not running", 0.0)
 
         start_time = time.time()
-        cmd = ["python3", scriptPath]
+        
+        # Ensure we execute using the sanitized path
+        safe_script_path = self._validate_container_path(scriptPath)
+        cmd = ["python3", safe_script_path]
         user_conf = "1000:1000" if self._run_as_non_root else "root"
 
         try:
-
             exec_instance = self._container.client.api.exec_create(
                 self._container.id,
                 cmd=cmd,
@@ -162,7 +160,6 @@ class DockerSandboxManager:
             future = executor.submit(_execute_blocking)
 
             try:
-
                 output_tuple = future.result(timeout=timeout_sec)
 
                 inspect_data = self._container.client.api.exec_inspect(exec_id)
@@ -199,9 +196,6 @@ class DockerSandboxManager:
             return self._build_execution_log("FAILURE", -1, "", str(e), (time.time() - start_time) * 1000)
 
     def _build_execution_log(self, status: str, exit_code, stdout: str, stderr: str, duration: float) -> dict:
-        """
-        Internal formatter to standardize output into the Execution_log schema payload.
-        """
         return {
             "execution_id": str(uuid.uuid4()),
             "patch_id": None,

@@ -4,6 +4,7 @@ import html
 import os
 import time
 import uuid
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
@@ -150,7 +151,12 @@ def show_alert(message: str, alert_type: str = 'info'):
       </div>
     </div>
     """
-    ui.notify(html_content, html=True, position='top-right', close_button=False)
+    try:
+        ui.notify(html_content, html=True, position='top-right', close_button=False)
+    except RuntimeError:
+        # The UI element was destroyed before the notification could render.
+        # This is safe to ignore.
+        pass
 
 def push_log(file_id: str, message: str):
     if file_id not in state.execution_logs:
@@ -343,6 +349,18 @@ async def _trigger_backend_run(file_id: str):
         raise RuntimeError("Session has not been initialized.")
 
     payload = build_orchestrator_payload(file_id)
+
+    target_file = payload.get("target_file")
+    if target_file is not None:
+        if hasattr(target_file, "model_dump"):
+            payload["target_file"] = target_file.model_dump(mode="json")
+        elif hasattr(target_file, "dict"):
+            payload["target_file"] = target_file.dict()
+        elif is_dataclass(target_file):
+            payload["target_file"] = asdict(target_file)
+        else:
+            payload["target_file"] = vars(target_file)
+
     async with httpx.AsyncClient() as client:
         await client.post(f"http://localhost:8000/api/run/{state.session_id}", json=payload)
 
@@ -398,14 +416,39 @@ def render_welcome():
             if state.import_mode == "FILES":
                 with ui.column().classes('w-full max-w-lg'):
                     ui.markdown("### Upload Files")
-                    def handle_upload(e: events.UploadEventArguments):
-                        imported_files = import_from_uploads([e])
+                    async def handle_upload(e: events.UploadEventArguments):
+                        imported_files = await import_from_uploads([e])
                         if imported_files:
                             for f in imported_files:
                                 state.files[f.file_id] = f
                             state.active_buffer = imported_files[0].file_id
+                            if not state.project_root:
+                                state.project_root = str(Path.cwd() / "revivo_workspace")
+                                os.makedirs(state.project_root, exist_ok=True)
+
+                            # Ensure uploaded files are tied to an active backend session.
+                            if not state.session_handler or not state.session_id:
+                                state.session_handler = SessionHandler()
+                                session_id = await state.session_handler.initialize_session(user_id="ea3491cd-7390-4c8f-a420-e15aa731b29a")
+                                state.session_id = session_id
+                                if session_id:
+                                    background_tasks.create(websocket_listener(session_id))
+
+                            # Ensure MCP client is available for later file write operations.
+                            if not state.mcp_client and state.project_root:
+                                state.mcp_client = MCPClient(server_uri="local://revivoai", allowed_root_path=state.project_root)
+
+                                async def connect_mcp_upload():
+                                    await asyncio.sleep(0.1)
+                                    state.mcp_client.connect()
+
+                                asyncio.create_task(connect_mcp_upload())
+
                             state.import_mode = None
+                            show_alert("Upload complete. You can now start AI translation.", alert_type='positive')
                             refresh_all()
+                        else:
+                            show_alert("Upload failed or file type is unsupported.", alert_type='warning')
                     ui.upload(on_upload=handle_upload, multiple=True, auto_upload=True).classes('w-full')
                     with ui.row().classes('w-full gap-4 mt-4'):
                         ui.button("Cancel", on_click=lambda: (setattr(state, 'import_mode', None), refresh_all())).classes('flex-1')

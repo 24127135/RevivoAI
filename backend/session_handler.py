@@ -26,7 +26,16 @@ class SessionHandler:
         logger.info("SessionHandler initialized with Supabase persistence.")
 
     async def _execute_db_call(self, query_builder) -> Any:
-        return await asyncio.to_thread(query_builder.execute)
+        for attempt in range(3):
+            try:
+                return await asyncio.to_thread(query_builder.execute)
+            except Exception as e:
+                # Catch transient Windows socket errors and retry
+                if "10035" in str(e) and attempt < 2:
+                    logger.warning(f"Transient socket error (WinError 10035). Retrying {attempt + 1}/3...")
+                    await asyncio.sleep(0.5)
+                    continue
+                raise
 
     async def initialize_session(self, user_id: str) -> Optional[str]:
         """
@@ -57,7 +66,7 @@ class SessionHandler:
         }
 
         try:
-            query = self.db.table("Session").insert(payload)
+            query = self.db.table("Session").upsert(payload)
             response = await self._execute_db_call(query)
 
             if not response.data:
