@@ -1,54 +1,77 @@
-# RevivoAI: Testing & Development Guidelines
+# RevivoAI Testing Guide
 
-Welcome to the RevivoAI test suite. This document serves as the source of truth for all testing standards, naming conventions, and environment configurations. 
+This document captures the testing conventions used in the current repository. The suite is designed to be fast, deterministic, and friendly to local development, even when optional services such as Supabase or Docker are unavailable.
 
-## 🎯 Our Philosophy
-We aim for **high test coverage** and **low friction**. Tests should be fast, reliable, and descriptive. If you are blocked by an incomplete module, do not wait—use a Mock.
+## Quick start
 
----
+Run tests from the repository root with Poetry:
 
-## 🚀 Quick Start
-All tests must be executed via `poetry` to ensure the correct virtual environment and path resolutions are used.
-
-### Basic Commands
-| Action | Command |
-| :--- | :--- |
-| **Run all tests** | `poetry run pytest` |
-| **Run Backend tests** | `poetry run pytest tests/backend/` |
-| **Run Frontend tests** | `poetry run pytest tests/frontend/` |
-| **Run with Verbose Logs** | `poetry run pytest -v` |
-
----
-
-## 📝 Naming Conventions (The Contract)
-Consistent naming allows us to understand failure logs without opening the file.
-
-### File Naming
-Mirror the source directory.
-*   `backend/module.py` ➔ `tests/backend/test_module.py`
-*   `frontend/components.py` ➔ `tests/frontend/test_components.py`
-
-### Test Function Naming
-Use the `Given_When_Then` pattern in `snake_case`.
-*   **Pattern:** `test_<component>_<scenario>_<expected_behavior>`
-*   **Good:** `test_mcp_client_invalid_path_raises_permission_error()`
-*   **Bad:** `test_mcp_error()`
-
----
-
-## 🛠 Writing Tests: Best Practices
-
-### 1. Use Fixtures
-For setup/teardown (e.g., creating/deleting temporary workspaces), use `pytest.fixture`. This prevents "zombie files" from cluttering your disk.
-```python
-@pytest.fixture
-def temp_workspace():
-    # Setup
-    os.makedirs("./temp")
-    yield "./temp"
-    # Teardown
-    shutil.rmtree("./temp")
+```bash
+poetry run pytest
 ```
 
-### 2. Cover Prompt Contracts
-When testing LLM orchestration nodes, assert the generated prompt contains the expected persona and output-contract cues. This keeps changes to the refactoring protocol intentional and makes parser assumptions explicit.
+Useful variants:
+
+```bash
+poetry run pytest tests/backend/
+poetry run pytest tests/test_frontend_runtime.py
+poetry run pytest -v
+```
+
+## Test layout
+
+- Root tests cover high-level app and frontend runtime behavior.
+- Backend tests live under tests/backend/ and focus on orchestration, sandbox, logger, and session logic.
+- The current project does not maintain a separate tests/frontend/ directory; use the root-level frontend runtime tests instead.
+
+## Naming conventions
+
+Mirror the production module names in the test file paths and use descriptive snake_case names:
+
+- backend/module.py -> tests/backend/test_module.py
+- app.py -> tests/test_app_payload.py
+
+Prefer this style:
+
+```python
+def test_session_handler_initializes_session_with_mock_client():
+    ...
+```
+
+Avoid vague names such as test_something or test_bug.
+
+## Writing tests
+
+### Prefer real behavior over heavy mocking
+
+Use mocks at the system boundary only. The project already provides local fallbacks for Supabase and related services, so tests should exercise the real logic whenever possible.
+
+Good examples:
+
+- Mock external LLM or Docker calls when testing orchestration flow
+- Use temporary directories for file-system work
+- Assert on observable behavior such as returned state, emitted logs, or raised exceptions
+
+### Use fixtures for setup and cleanup
+
+```python
+import shutil
+import pytest
+
+@pytest.fixture
+def temp_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    yield workspace
+    shutil.rmtree(workspace, ignore_errors=True)
+```
+
+### Keep prompt and output-contract tests explicit
+
+When testing LLM patching or orchestration nodes, assert that the generated prompt or structured response contains the expected contract cues. This keeps the patching protocol intentional and easier to evolve.
+
+## Environment notes
+
+- Set DISABLE_SUPABASE=true for local runs that should not rely on remote persistence.
+- Avoid requiring Docker during unit tests unless the test is specifically about sandbox behavior.
+- If a dependency is not available, prefer a small stub or monkeypatch over a brittle full integration setup.
