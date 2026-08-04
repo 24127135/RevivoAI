@@ -1,10 +1,12 @@
 import os
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # Load environment variables from .env file
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=PROJECT_ROOT / ".env")
 
 # Configure logging for the database module
 logging.basicConfig(level=logging.INFO)
@@ -40,11 +42,12 @@ class MockSupabaseClient:
         return MockTable()
 
 
-def get_supabase_client() -> Client:
+def get_supabase_client():
     """
     Initializes and returns a Supabase Client instance when credentials are available.
-    Falls back to the mock client only if initialization fails, so local development
-    and tests remain usable even without a configured Supabase project.
+    Uses the robust key-checking (including service_role) to bypass RLS if provided.
+    Falls back to the mock client if initialization fails or keys are missing, 
+    so local development and tests remain usable even without a configured Supabase project.
     """
     disable_supabase = os.environ.get("DISABLE_SUPABASE", "false").lower() in ("true", "1", "yes")
     if disable_supabase:
@@ -52,10 +55,17 @@ def get_supabase_client() -> Client:
         return MockSupabaseClient()
 
     supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_KEY")
+    supabase_key = (
+        os.environ.get("SUPABASE_KEY")
+        or os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    )
 
     if not supabase_url or not supabase_key:
-        logger.info("Supabase credentials not configured. Using Mock client.")
+        logger.info(
+            "Missing SUPABASE_URL or one of SUPABASE_KEY/SUPABASE_SECRET_KEY/"
+            "SUPABASE_SERVICE_ROLE_KEY. Using Mock client for local development."
+        )
         return MockSupabaseClient()
 
     try:

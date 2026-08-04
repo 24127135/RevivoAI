@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect
 
+from backend.models import ProjectFile
 from backend.orchestrator import orchestrator_app
 from backend.websocket import manager
 
@@ -25,7 +26,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 async def run_orchestrator_task(session_id: str, payload: dict):
     current_state: dict[str, Any] = dict(payload)
 
-    async for event in orchestrator_app.astream(payload):
+    target_data = current_state.get("target_file")
+    if isinstance(target_data, dict):
+        current_state["target_file"] = ProjectFile(**target_data)
+
+    async for event in orchestrator_app.astream(current_state):
         if isinstance(event, dict):
             for node_name, state_chunk in event.items():
                 if isinstance(state_chunk, dict):

@@ -11,7 +11,7 @@ from google import genai
 class GeminiClient:
     """Minimal Gemini-backed client that satisfies the node generate protocol."""
 
-    def __init__(self, api_key: str | None = None, model_name: str = "gemini-1.5-pro") -> None:
+    def __init__(self, api_key: str | None = None, model_name: str = "gemini-3.5-flash-lite") -> None:
         self.model_name = model_name
         resolved_api_key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY")
         self.client = genai.Client(api_key=resolved_api_key) if resolved_api_key else None

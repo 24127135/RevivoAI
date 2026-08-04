@@ -667,9 +667,7 @@ section[data-testid="stSidebar"],
 }}
 
 /* 
-====================================================================
 9. LANGGRAPH STATE MACHINE TRACKER
-==================================================================== 
 */
 .langgraph-tracker {{
     display: flex;
@@ -738,9 +736,7 @@ section[data-testid="stSidebar"],
 }}
 
 /* 
-====================================================================
 10. DOCKER TERMINAL UI
-==================================================================== 
 */
 .docker-terminal {{
     background-color: #1e1e1e;
@@ -776,9 +772,7 @@ section[data-testid="stSidebar"],
 }}
 
 /* 
-====================================================================
 11. ACTION CENTER PEEK & POP
-==================================================================== 
 */
 .action-peek {{
     transform: translateY(calc(100% - 80px));

@@ -4,6 +4,7 @@ import html
 import os
 import time
 import uuid
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
@@ -257,6 +258,12 @@ def show_alert(message: str, alert_type: str = 'info'):
       </div>
     </div>
     """
+    try:
+        ui.notify(html_content, html=True, position='top-right', close_button=False)
+    except RuntimeError:
+        # The UI element was destroyed before the notification could render.
+        # This is safe to ignore.
+        pass
     ui.notify(html_content, html=True, position='top-right', close_button=False)
 
 
@@ -588,12 +595,23 @@ async def _trigger_backend_run(file_id: str):
         raise RuntimeError("Session has not been initialized.")
 
     payload = build_orchestrator_payload(file_id)
+
+    target_file = payload.get("target_file")
+    if target_file is not None:
+        if hasattr(target_file, "model_dump"):
+            payload["target_file"] = target_file.model_dump(mode="json")
+        elif hasattr(target_file, "dict"):
+            payload["target_file"] = target_file.dict()
+        elif is_dataclass(target_file):
+            payload["target_file"] = asdict(target_file)
+        else:
+            payload["target_file"] = vars(target_file)
+
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"http://localhost:8000/api/run/{state.session_id}", json=payload, timeout=10.0)
         except Exception as exc:
             raise RuntimeError(f"Backend request failed: {exc}") from exc
-
     return True
 
 # ============================================================================

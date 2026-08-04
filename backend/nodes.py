@@ -158,6 +158,7 @@ class LLMPatchNode:
         """Generate a patch for the current target file using the injected LLM client."""
         target_file = state.get("target_file")
         error_trace = state.get("error_trace", "")
+        
         # Prefer an explicit system_prompt if provided; otherwise resolve persona-based prompt
         explicit = state.get("system_prompt")
         if isinstance(explicit, str) and explicit.strip():
@@ -176,58 +177,63 @@ class LLMPatchNode:
         prompt = self._construct_prompt(target_file, error_trace, system_prompt)
         raw = self.llm_client.generate(prompt)
 
-        # If the model responded with the structured protocol (contains ### ACTION
-        # or the delimiter '---'), parse it strictly and enforce the safety valve.
-        if (isinstance(raw, str) and ("### ACTION" in raw or "---" in raw)):
+        print("\n=== RAW LLM OUTPUT ===")
+        print(raw)
+        print("======================\n")
+
+        # Bulletproof parsing: Use regex to find headers regardless of markdown bolding (** or __)
+        # or conversational filler text outside the blocks.
+        if isinstance(raw, str):
             sections: dict[str, str] = {}
-            parts = [p.strip() for p in raw.split('---') if p.strip()]
-            for part in parts:
-                # look for a header like '### NAME:' on the first line
-                lines = part.splitlines()
-                if not lines:
-                    continue
-                m = re.match(r"^###\s*([A-Z_]+):\s*(.*)$", lines[0].strip())
-                if not m:
-                    # malformed section; treat as refusal
-                    return {"status": "REFUSED", "reason": "Malformed structured output", "raw": raw}
-                name = m.group(1).strip()
-                body = "\n".join(lines[1:]).strip()
-                sections[name] = body
+            
+            # This regex looks for ### followed by optional bolding, the header name, optional bolding, and an optional colon.
+            pattern = r"###\s*(?:\*\*|__)?([A-Z_]+)(?:\*\*|__)?\s*:?"
+            parts = re.split(pattern, raw)
+            
+            # re.split returns [filler_text, HEADER_1, content_1, HEADER_2, content_2, ...]
+            if len(parts) > 1:
+                for i in range(1, len(parts), 2):
+                    header_name = parts[i].strip().upper()
+                    content = parts[i+1].strip()
+                    
+                    # Clean up any stray '---' delimiters Gemini might have left inside the content body
+                    content = re.sub(r"(?m)^\s*---\s*$", "", content).strip()
+                    sections[header_name] = content
 
-            # Required headers
-            required = {"CHARACTERIZATION", "REASONING", "CODE", "VERIFY", "ASSUMPTIONS", "ACTION"}
-            if not required.issubset(set(sections.keys())):
-                return {"status": "REFUSED", "reason": "Missing required sections", "raw": raw}
+                # Required headers
+                required = {"CHARACTERIZATION", "REASONING", "CODE", "VERIFY", "ASSUMPTIONS", "ACTION"}
+                if not required.issubset(set(sections.keys())):
+                    return {"status": "REFUSED", "reason": f"Missing required sections. Found: {list(sections.keys())}", "raw": raw}
 
-            # Enforce safety valve: CHARACTERIZATION must list at least one INVARIANT
-            char = sections.get("CHARACTERIZATION", "")
-            invariant_lines = [
-                line.strip() for line in char.splitlines() if line.strip().upper().startswith("INVARIANT:")
-            ]
-            if not invariant_lines:
-                return {"status": "REFUSED", "reason": "CHARACTERIZATION must include at least one INVARIANT entry", "raw": raw}
+                # Enforce safety valve: CHARACTERIZATION must list at least one INVARIANT
+                char = sections.get("CHARACTERIZATION", "")
+                invariant_lines = [
+                    line.strip() for line in char.splitlines() if "INVARIANT:" in line.strip().upper()
+                ]
+                if not invariant_lines:
+                    return {"status": "REFUSED", "reason": "CHARACTERIZATION must include at least one INVARIANT entry", "raw": raw}
 
-            action = sections.get("ACTION", "").strip().upper()
-            if "REFUSE" in action:
-                return {"status": "REFUSED", "reason": sections.get("REASONING", ""), "assumptions": sections.get("ASSUMPTIONS", ""), "raw": raw}
+                action = sections.get("ACTION", "").strip().upper()
+                if "REFUSE" in action:
+                    return {"status": "REFUSED", "reason": sections.get("REASONING", ""), "assumptions": sections.get("ASSUMPTIONS", ""), "raw": raw}
 
-            # ACTION indicates APPLY; extract code block from CODE section
-            code_section = sections.get("CODE", "")
-            code_match = re.search(r"```(?:[a-zA-Z0-9_+-]*)\n([\s\S]*?)\n```", code_section)
-            if code_match:
-                code_text = code_match.group(1).rstrip() + "\n"
-            else:
-                # If no fenced block, use the full CODE section
-                code_text = code_section.strip() + "\n"
+                # ACTION indicates APPLY; extract code block from CODE section
+                code_section = sections.get("CODE", "")
+                code_match = re.search(r"```(?:[a-zA-Z0-9_+-]*)\n([\s\S]*?)\n```", code_section)
+                if code_match:
+                    code_text = code_match.group(1).rstrip() + "\n"
+                else:
+                    # If no fenced block, use the full CODE section
+                    code_text = code_section.strip() + "\n"
 
-            return {
-                "patched_code": code_text,
-                "status": "PATCH_GENERATED",
-                "characterization": sections.get("CHARACTERIZATION", ""),
-                "invariants": invariant_lines,
-                "assumptions": sections.get("ASSUMPTIONS", ""),
-                "raw": raw,
-            }
+                return {
+                    "patched_code": code_text,
+                    "status": "PATCH_GENERATED",
+                    "characterization": sections.get("CHARACTERIZATION", ""),
+                    "invariants": invariant_lines,
+                    "assumptions": sections.get("ASSUMPTIONS", ""),
+                    "raw": raw,
+                }
 
         # Fallback: legacy unstructured response - pass through as patch
         return {"patched_code": raw, "status": "PATCH_GENERATED"}
