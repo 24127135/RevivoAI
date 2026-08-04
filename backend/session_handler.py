@@ -53,6 +53,16 @@ class SessionHandler:
             logger.error(f"Failed to create workspace directory for {session_id}: {e}")
             raise
 
+        # ---> FIX: Upsert the User record first to satisfy the Foreign Key constraint
+        try:
+            user_query = self.db.table("User").upsert({"id": user_id})
+            await self._execute_db_call(user_query)
+        except Exception as e:
+            logger.error(f"Failed to upsert user {user_id} before session creation: {e}")
+            await self._cleanup_workspace(workspace_path)
+            raise
+        # <--- END FIX
+
         # Prepare DB Payload with explicit timestamps to satisfy NOT NULL constraints
         now_utc = datetime.now(timezone.utc)
         expires_at = now_utc + timedelta(hours=2)

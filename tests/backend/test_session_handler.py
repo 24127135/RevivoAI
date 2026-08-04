@@ -55,7 +55,7 @@ def handler(mock_supabase, workspace_root):
 async def test_initialize_session_success_provisions_workspace_and_returns_uuid(
     handler, mock_supabase, workspace_root
 ):
-    mock_supabase.table.return_value.insert.return_value.execute.return_value = make_response(
+    mock_supabase.table.return_value.upsert.return_value.execute.return_value = make_response(
         [{"session_id": "whatever", "user_id": "user-1", "is_active": True}]
     )
 
@@ -64,13 +64,21 @@ async def test_initialize_session_success_provisions_workspace_and_returns_uuid(
     assert session_id is not None
     assert os.path.isdir(os.path.join(str(workspace_root), session_id))
 
-    _, kwargs = mock_supabase.table.return_value.insert.call_args
-    payload = mock_supabase.table.return_value.insert.call_args[0][0]
-    assert payload["session_id"] == session_id
-    assert payload["user_id"] == "user-1"
-    assert payload["is_active"] is True
-    assert "created_at" in payload
-    assert "expires_at" in payload
+    # Two upsert calls happen now: 1 for User, 1 for Session
+    upsert_calls = mock_supabase.table.return_value.upsert.call_args_list
+    assert len(upsert_calls) == 2
+
+    # Verify User payload
+    user_payload = upsert_calls[0][0][0]
+    assert user_payload == {"id": "user-1"}
+
+    # Verify Session payload
+    session_payload = upsert_calls[1][0][0]
+    assert session_payload["session_id"] == session_id
+    assert session_payload["user_id"] == "user-1"
+    assert session_payload["is_active"] is True
+    assert "created_at" in session_payload
+    assert "expires_at" in session_payload
 
 
 @pytest.mark.asyncio
@@ -79,7 +87,7 @@ async def test_initialize_session_rls_blocks_insert_cleans_up_workspace_returns_
 ):
     # Supabase can return HTTP 200 with zero rows when Row Level Security blocks
     # the write silently, without raising an exception.
-    mock_supabase.table.return_value.insert.return_value.execute.return_value = make_response([])
+    mock_supabase.table.return_value.upsert.return_value.execute.return_value = make_response([])
 
     session_id = await handler.initialize_session(user_id="user-1")
 
@@ -92,7 +100,7 @@ async def test_initialize_session_rls_blocks_insert_cleans_up_workspace_returns_
 async def test_initialize_session_db_error_cleans_up_workspace_and_reraises(
     handler, mock_supabase, workspace_root
 ):
-    mock_supabase.table.return_value.insert.return_value.execute.side_effect = RuntimeError("connection refused")
+    mock_supabase.table.return_value.upsert.return_value.execute.side_effect = RuntimeError("connection refused")
 
     with pytest.raises(RuntimeError, match="connection refused"):
         await handler.initialize_session(user_id="user-1")
@@ -112,7 +120,7 @@ async def test_initialize_session_workspace_creation_failure_raises_without_call
     with pytest.raises(OSError, match="disk full"):
         await handler.initialize_session(user_id="user-1")
 
-    mock_supabase.table.return_value.insert.assert_not_called()
+    mock_supabase.table.return_value.upsert.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

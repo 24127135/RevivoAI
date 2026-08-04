@@ -515,6 +515,7 @@ def save_and_retest(file_id: str, widget_value: str):
     f.ai_source = widget_value
     state.diff_state[file_id] = "readonly"
     push_log(file_id, "[User Action] Manual patch edit submitted. Restarting execution...")
+    state.is_thinking = True 
     asyncio.create_task(simulate_sandbox(file_id))
 
 def refresh_all():
@@ -552,7 +553,6 @@ def build_orchestrator_payload(file_id: str) -> dict:
         "max_iterations": 3,
     }
 
-
 async def websocket_listener(session_id: str):
     websocket_url = f"ws://localhost:8000/ws/{session_id}"
     try:
@@ -572,15 +572,51 @@ async def websocket_listener(session_id: str):
                     continue
 
                 if isinstance(payload, dict):
-                    if "docker_exit_code" in payload:
-                        state.agent_state[file_id] = payload.get("current_node", state.agent_state.get(file_id, "Done"))
                     if "traceback_log" in payload and payload["traceback_log"]:
-                        push_log(file_id, str(payload["traceback_log"]))
+                        log_msg = str(payload["traceback_log"])
+                        push_log(file_id, log_msg)
+                        
+                        # FIX 1: Only allow live logs to switch the UI into active states if it is STILL running!
+                        # This prevents delayed websocket packets from reverting a PASSED/FAILED file.
+                        if state.is_thinking:
+                            if "[LLM Engine] Prompting AI" in log_msg: 
+                                state.thinking_phase = 0
+                                state.files[file_id].status = FileStatus.TRANSLATING
+                                state.agent_state[file_id] = "llm_patch_node"
+                            elif "[LLM Engine] Analyzing" in log_msg: 
+                                state.thinking_phase = 1
+                            elif "Response received" in log_msg: 
+                                state.thinking_phase = 2
+                            elif "[Sandbox] Provisioning" in log_msg: 
+                                state.thinking_phase = 0
+                                state.files[file_id].status = FileStatus.SANDBOX_TESTING
+                                state.agent_state[file_id] = "sandbox_node"
+                            elif "[Sandbox] Injecting" in log_msg: 
+                                state.thinking_phase = 1
+                            elif "[Sandbox] Executing" in log_msg: 
+                                state.thinking_phase = 2
+                    
                     if "patched_code" in payload and payload["patched_code"]:
                         state.files[file_id].ai_source = payload["patched_code"]
-                    if "docker_exit_code" in payload:
-                        state.files[file_id].status = FileStatus.PASSED if payload["docker_exit_code"] == 0 else FileStatus.FAILED
-                        if payload["docker_exit_code"] != 0:
+
+                    # FIX 2: Catch terminal states directly from the websocket!
+                    # By verifying current_node == "sandbox_node", we ignore stale exit_codes from earlier iterations.
+                    if payload.get("current_node") == "sandbox_node" and "docker_exit_code" in payload:
+                        exit_code = payload["docker_exit_code"]
+                        iteration = payload.get("iteration_count", 1)
+                        max_iters = payload.get("max_iterations", 3)
+                        
+                        if exit_code == 0:
+                            state.files[file_id].status = FileStatus.PASSED
+                            state.is_thinking = False
+                            state.agent_state[file_id] = "Done"
+                        elif iteration >= max_iters:
+                            state.files[file_id].status = FileStatus.FAILED
+                            state.is_thinking = False
+                            state.agent_state[file_id] = "Done"
+                            state.files[file_id].raw_traceback = str(payload.get("traceback_log", ""))
+                        else:
+                            # It is still looping. Capture the traceback but keep thinking!
                             state.files[file_id].raw_traceback = str(payload.get("traceback_log", ""))
 
                 render_sidebar.refresh()
@@ -589,7 +625,6 @@ async def websocket_listener(session_id: str):
         if session_id:
             push_log(state.active_buffer or "", f"[WebSocket] Listener stopped for session {session_id}: {exc}")
 
-
 async def _trigger_backend_run(file_id: str):
     if not state.session_id:
         raise RuntimeError("Session has not been initialized.")
@@ -597,7 +632,8 @@ async def _trigger_backend_run(file_id: str):
     payload = build_orchestrator_payload(file_id)
 
     target_file = payload.get("target_file")
-    if target_file is not None:
+    if target_file is not None and not isinstance(target_file, dict):
+        from dataclasses import asdict, is_dataclass
         if hasattr(target_file, "model_dump"):
             payload["target_file"] = target_file.model_dump(mode="json")
         elif hasattr(target_file, "dict"):
@@ -609,11 +645,12 @@ async def _trigger_backend_run(file_id: str):
 
     async with httpx.AsyncClient() as client:
         try:
+            # Restore the standard 10-second timeout since it returns immediately
             await client.post(f"http://localhost:8000/api/run/{state.session_id}", json=payload, timeout=10.0)
         except Exception as exc:
             raise RuntimeError(f"Backend request failed: {exc}") from exc
+            
     return True
-
 # ============================================================================
 # ASYNC SIMULATIONS (LANGGRAPH NODES)
 # ============================================================================
@@ -627,19 +664,35 @@ async def simulate_translation(file_id: str):
     push_log(file_id, f"Initializing AgentState with workspace: {state.project_root}")
 
     try:
+        # Just fire the API request! The WebSocket will handle ALL terminal state logic.
         await _trigger_backend_run(file_id)
     except Exception as exc:
         state.files[file_id].status = FileStatus.FAILED
         state.agent_state[file_id] = "Failed"
+        state.is_thinking = False
         push_log(file_id, f"[System] Translation failed: {exc}")
         show_alert(f"Translation could not start: {exc}", alert_type='warning')
     finally:
-        state.is_thinking = False
         refresh_all()
 
 async def simulate_sandbox(file_id: str, is_chained: bool = False):
     push_log(file_id, f"Initializing AgentState with workspace: {state.project_root}")
-    await _trigger_backend_run(file_id)
+    state.is_thinking = True
+    
+    state.files[file_id].status = FileStatus.SANDBOX_TESTING
+    state.agent_state[file_id] = "sandbox_node"
+    state.thinking_phase = 0
+    refresh_all()
+    
+    try:
+        await _trigger_backend_run(file_id)
+    except Exception as exc:
+        state.files[file_id].status = FileStatus.FAILED
+        state.agent_state[file_id] = "Failed"
+        state.is_thinking = False
+        push_log(file_id, f"[System] Sandbox run failed: {exc}")
+    finally:
+        refresh_all()
 
 def run_translation_simulation(file_id: str):
     if file_id not in state.files:
@@ -1038,14 +1091,23 @@ def render_sidebar():
 # ============================================================================
 def render_segmented_status_header(f: ProjectFile, current_state: str, progress: int = 50, show_rerun: bool = False, rerun_callback=None):
     nodes = ["Analyze", "Propose", "Execute", "Evaluate"]
+
+    state_map = {
+        "Starting": "Analyze",
+        "llm_patch_node": "Propose",
+        "sandbox_node": "Execute",
+        "Done": "Done"
+    }
+    mapped_state = state_map.get(current_state, current_state)
     
-    if current_state in nodes:
-        currentStep = nodes.index(current_state)
-    elif current_state == "Done":
+    if mapped_state in nodes:
+        currentStep = nodes.index(mapped_state)
+    elif mapped_state == "Done":
         currentStep = 4
     else:
         currentStep = -1
 
+    # Define the colors based on status (No wrapping "if" statement here!)
     if f.status in (FileStatus.QUEUED, FileStatus.EDITED_PENDING):
         theme_color = "#d1d5db"
         text_color = "var(--neo-black)"

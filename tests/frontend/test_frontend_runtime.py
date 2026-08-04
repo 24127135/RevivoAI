@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -16,7 +17,8 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def post(self, url, json=None):
+    # FIX: Added **kwargs so the mock can accept timeout=10.0 without crashing!
+    async def post(self, url, json=None, **kwargs):
         self.requests.append((url, json))
         return type("Response", (), {"status_code": 200})()
 
@@ -46,7 +48,9 @@ class FakeWebSocketConnect:
 
 
 @pytest.mark.asyncio
-async def test_simulate_translation_posts_payload_to_backend(monkeypatch, tmp_path):
+@patch("app.refresh_all")
+@patch("app.show_alert")
+async def test_simulate_translation_posts_payload_to_backend(mock_alert, mock_refresh, monkeypatch, tmp_path):
     source_file = tmp_path / "sample.py"
     source_file.write_text("print('hello')\n", encoding="utf-8")
 

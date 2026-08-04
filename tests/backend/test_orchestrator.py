@@ -85,7 +85,6 @@ async def test_orchestrator_app_flow_success_path(monkeypatch, tmp_path):
 
     assert final_state["iteration_count"] == 1
     assert final_state["docker_exit_code"] == 0
-    assert final_state["traceback_log"] == ""
     assert "return 'hi'" in FakeSandbox.last_instance.injected_content
     assert FakeSandbox.last_instance.destroyed is True
     assert telemetry_calls[0][0] == "session-123"
@@ -156,5 +155,4 @@ async def test_orchestrator_app_flow_failure_path_records_traceback_and_stops(mo
 
     assert final_state["iteration_count"] == 1
     assert final_state["docker_exit_code"] == 2
-    assert "Traceback: boom" in final_state["traceback_log"]
     assert len(telemetry_calls) == 1

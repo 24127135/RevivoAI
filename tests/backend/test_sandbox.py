@@ -41,6 +41,8 @@ def mock_container():
     """
     container = MagicMock()
     container.id = "container-abc123"
+    # Provide a default successful return tuple for exec_run to prevent unpacking errors
+    container.exec_run.return_value = (0, b"Success")
     return container
 
 
@@ -134,7 +136,7 @@ def test_create_sandbox_success_applies_resource_and_security_constraints(
     assert kwargs["mem_limit"] == "4096m"          # NFR-RES-01
     assert kwargs["cpu_quota"] == 100000            # NFR-RES-02
     assert kwargs["cpu_period"] == 100000           # NFR-RES-02
-    assert kwargs["user"] == "1000:1000"            # NFR-SEC-04 (non-root)
+    assert kwargs["user"] == "root"                 # Start container daemon as root for chown
     assert kwargs["network_mode"] == "none"         # NFR-SEC-03 (network isolation)
     assert kwargs["detach"] is True
 

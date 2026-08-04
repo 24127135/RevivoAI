@@ -64,10 +64,8 @@ class DockerSandboxManager:
             # One-time root init: prepare a workspace directory owned by the
             # non-root user so per-file mkdir calls in injectCode() never need root.
             if self._run_as_non_root:
-                self._container.exec_run(
-                    f"mkdir -p {self._WORKSPACE_ROOT} && chown -R 1000:1000 {self._WORKSPACE_ROOT}",
-                    user="root"
-                )
+                self._container.exec_run(f"mkdir -p {self._WORKSPACE_ROOT}", user="root")
+                self._container.exec_run(f"chown -R 1000:1000 {self._WORKSPACE_ROOT}", user="root")
 
             return self._container_id
         except APIError as e:
@@ -164,7 +162,8 @@ class DockerSandboxManager:
             exec_instance = self._container.client.api.exec_create(
                 self._container.id,
                 cmd=cmd,
-                user=user_conf
+                user=user_conf,
+                workdir="/workspace",
             )
             exec_id = exec_instance['Id']
 

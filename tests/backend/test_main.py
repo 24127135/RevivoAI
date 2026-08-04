@@ -42,7 +42,18 @@ async def test_run_orchestrator_task_merges_streamed_state_and_broadcasts(monkey
     monkeypatch.setattr(main_module, "orchestrator_app", FakeOrchestrator())
     monkeypatch.setattr(main_module.manager, "broadcast_state", fake_broadcast_state)
 
-    await main_module.run_orchestrator_task("session-1", {"target_file": {"path": "x.py"}})
+    valid_payload = {
+        "target_file": {
+            "file_id": "f_123",
+            "path": "x.py",
+            "legacy_source": "print('old')",
+            "ai_source": "",
+            "status": "QUEUED",
+            "language": "python"
+        }
+    }
+
+    await main_module.run_orchestrator_task("session-1", valid_payload)
 
     assert broadcast_calls[0][0] == "session-1"
     assert broadcast_calls[0][1]["patched_code"] == "print('hello')"
@@ -60,15 +71,26 @@ async def test_run_orchestrator_endpoint_queues_background_task():
             captured["args"] = args
             captured["kwargs"] = kwargs
 
+    valid_payload = {
+        "target_file": {
+            "file_id": "f_123",
+            "path": "x.py",
+            "legacy_source": "print('old')",
+            "ai_source": "",
+            "status": "QUEUED",
+            "language": "python"
+        }
+    }
+
     response = await main_module.run_orchestrator(
         "session-1",
-        {"target_file": {"path": "x.py"}},
+        valid_payload,
         FakeBackgroundTasks(),
     )
 
     assert response == {"status": "queued", "session_id": "session-1"}
     assert captured["fn"] is main_module.run_orchestrator_task
-    assert captured["args"] == ("session-1", {"target_file": {"path": "x.py"}})
+    assert captured["args"] == ("session-1", valid_payload)
 
 
 @pytest.mark.asyncio

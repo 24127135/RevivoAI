@@ -1,3 +1,5 @@
+import pytest
+from unittest.mock import patch
 from backend.models import FileStatus, ProjectFile
 
 import app as app_module
@@ -68,7 +70,9 @@ def test_get_staging_summary_counts_sums_statuses():
         app_module.state.staging_files = original_staging_files
 
 
-def test_run_translation_simulation_sets_busy_state_without_backend_session():
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@patch("nicegui.ui.notify")
+def test_run_translation_simulation_sets_busy_state_without_backend_session(mock_notify):
     project_file = ProjectFile(
         file_id="file-2",
         path="sample.py",
@@ -101,7 +105,9 @@ def test_run_translation_simulation_sets_busy_state_without_backend_session():
         app_module.state.session_id = original_session_id
 
 
-def test_merge_project_files_into_workspace_adds_unique_files():
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@patch("nicegui.ui.notify")
+def test_merge_project_files_into_workspace_adds_unique_files(mock_notify):
     existing_file = ProjectFile(
         file_id="file-existing",
         path="/tmp/existing.py",
