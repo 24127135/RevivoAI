@@ -63,13 +63,65 @@ class AppState:
         self.current_terminal = None
         self.fullscreen_mode: str | None = None  # None, 'diff', 'source', 'edit_legacy', 'edit_ai'
 
+        # Staging screen — files waiting for user confirmation before entering workspace
+        # Each entry: {name, size_str, pct, status, project_file}
+        #   status: 'uploading' | 'done' | 'failed'
+        self.staging_files: list[dict] = []
+        self.temp_project_root: str | None = None
+
 state = AppState()
 
 async def load_demo_project():
-    """Loads seed data. Everything starts as QUEUED now."""
+    """Populates the staging screen with seed files so the user can review before proceeding."""
     files = build_seed_files()
-    state.files = {f.file_id: f for f in files}
-    state.active_buffer = files[0].file_id
+    state.staging_files = []
+    for i, f in enumerate(files):
+        size_bytes = len(f.legacy_source.encode('utf-8'))
+        if size_bytes >= 1024:
+            size_str = f'{size_bytes / 1024:.1f} KB'
+        else:
+            size_str = f'{size_bytes} B'
+        # Make one file "failed" so user can see the retry button
+        if i == 3:
+            entry_status = 'failed'
+            entry_pct = 62
+        # Make one file "uploading" so user can see the progress bar mid-way
+        elif i == 7:
+            entry_status = 'uploading'
+            entry_pct = 45
+        else:
+            entry_status = 'done'
+            entry_pct = 100
+        state.staging_files.append({
+            'name': f.path,
+            'size_str': size_str,
+            'pct': entry_pct,
+            'status': entry_status,
+            'project_file': f,
+        })
+    state.import_mode = "STAGING"
+    refresh_all()
+
+async def commit_staging_to_workspace():
+    """User clicked Proceed — move staging files into the workspace."""
+    ready = [e for e in state.staging_files if e['status'] == 'done']
+    if not ready:
+        show_alert("No files ready to proceed. Upload or retry failed files first.", alert_type='warning')
+        return
+    for entry in ready:
+        pf = entry['project_file']
+        state.files[pf.file_id] = pf
+    state.active_buffer = ready[0]['project_file'].file_id
+    if state.temp_project_root:
+        state.project_root = state.temp_project_root
+        state.temp_project_root = None
+        state.mcp_client = MCPClient(server_uri="local://revivoai", allowed_root_path=state.project_root)
+        async def connect_mcp():
+            await asyncio.sleep(0.1)
+            state.mcp_client.connect()
+        asyncio.create_task(connect_mcp())
+    
+    state.staging_files = []
     state.import_mode = None
     state.session_handler = SessionHandler()
     session_id = await state.session_handler.initialize_session(user_id=str(uuid.uuid4()))
@@ -94,31 +146,86 @@ async def handle_native_import_project():
         try:
             imported_files = import_local_project(folder)
             if imported_files:
+                skipped = 0
                 for f in imported_files:
-                    state.files[f.file_id] = f
-                state.active_buffer = imported_files[0].file_id
-                state.project_root = folder
-                state.import_mode = None
+                    if any(entry.get('name') == f.path for entry in state.staging_files):
+                        skipped += 1
+                        continue
+
+                    size_bytes = len(f.legacy_source.encode('utf-8'))
+                    size_str = f'{size_bytes / 1024:.1f} KB' if size_bytes >= 1024 else f'{size_bytes} B'
+                    state.staging_files.append({
+                        'name': f.path,
+                        'size_str': size_str,
+                        'pct': 100,
+                        'status': 'done',
+                        'project_file': f,
+                    })
                 
-                # Asynchronously pass the path to SessionHandler
-                state.session_handler = SessionHandler()
-                session_id = await state.session_handler.initialize_session(user_id=str(uuid.uuid4()))
-                state.session_id = session_id
-                if session_id:
-                    background_tasks.create(websocket_listener(session_id))
+                if skipped > 0:
+                    show_alert(f"Skipped {skipped} duplicate file(s).", alert_type='warning')
                 
-                # Asynchronously pass the path to MCPClient
-                state.mcp_client = MCPClient(server_uri="local://revivoai", allowed_root_path=folder)
-                async def connect_mcp():
-                    await asyncio.sleep(0.1) # Simulate async delay
-                    state.mcp_client.connect()
-                asyncio.create_task(connect_mcp())
-                
-                refresh_all()
+                if state.staging_files:
+                    state.temp_project_root = folder
+                    state.import_mode = "STAGING"
+                    refresh_all()
             else:
                 show_alert("No readable source files found in that directory.", alert_type='warning')
-        except ValueError:
-            show_alert("Directory not found. Check the path and try again.", alert_type='negative')
+        except Exception as e:
+            show_alert(f"Failed to import project: {e}", alert_type='negative')
+
+async def open_file_picker():
+    def pick():
+        import tkinter as _tk
+        from tkinter import filedialog as _fd
+        root = _tk.Tk()
+        root.attributes('-topmost', True)
+        root.withdraw()
+        paths = _fd.askopenfilenames(
+            title='Select source files',
+            filetypes=[
+                ('Source files', '*.py *.c *.cpp *.h *.hpp *.r *.rmd'),
+                ('All files', '*.*'),
+            ]
+        )
+        root.destroy()
+        return list(paths)
+    paths = await asyncio.to_thread(pick)
+    if paths:
+        from backend.import_utils import _guess_lang
+        skipped = 0
+        for p in paths:
+            fname = Path(p).name
+            if any(entry.get('name') == fname for entry in state.staging_files):
+                skipped += 1
+                continue
+
+            try:
+                with open(p, 'r', encoding='utf-8', errors='replace') as fh:
+                    content = fh.read()
+                pf = ProjectFile(
+                    file_id=f'f_{uuid.uuid4().hex[:8]}',
+                    path=p,
+                    legacy_source=content,
+                    ai_source='',
+                    status=FileStatus.QUEUED,
+                    language=_guess_lang(fname),
+                )
+                size_bytes = len(content.encode('utf-8'))
+                size_str = f'{size_bytes / 1024:.1f} KB' if size_bytes >= 1024 else f'{size_bytes} B'
+                state.staging_files.append({
+                    'name': fname, 'size_str': size_str,
+                    'pct': 100, 'status': 'done', 'project_file': pf,
+                })
+            except Exception:
+                pass
+        
+        if skipped > 0:
+            show_alert(f"Skipped {skipped} duplicate file(s).", alert_type='warning')
+
+        if state.staging_files:
+            state.import_mode = "STAGING"
+            refresh_all()
 
 # ============================================================================
 # STATE HELPERS
@@ -157,6 +264,136 @@ def show_alert(message: str, alert_type: str = 'info'):
         # The UI element was destroyed before the notification could render.
         # This is safe to ignore.
         pass
+    ui.notify(html_content, html=True, position='top-right', close_button=False)
+
+
+def get_staging_summary_counts() -> dict[str, int]:
+    counts = {"total": 0, "done": 0, "failed": 0, "uploading": 0}
+    for entry in state.staging_files:
+        status = str(entry.get("status", "done")).lower()
+        counts["total"] += 1
+        if status == "done":
+            counts["done"] += 1
+        elif status == "failed":
+            counts["failed"] += 1
+        elif status == "uploading":
+            counts["uploading"] += 1
+    return counts
+
+
+def merge_project_files_into_workspace(imported_files: list[ProjectFile], source_root: str | None = None) -> dict[str, int]:
+    existing_paths = {f.path for f in state.files.values() if getattr(f, 'path', None)}
+    added_files: list[ProjectFile] = []
+    skipped = 0
+
+    for f in imported_files:
+        if not getattr(f, 'path', None) or f.path in existing_paths:
+            skipped += 1
+            continue
+
+        state.files[f.file_id] = f
+        existing_paths.add(f.path)
+        added_files.append(f)
+
+    if added_files:
+        if not state.project_root and source_root:
+            state.project_root = source_root
+        if not state.active_buffer and state.files:
+            state.active_buffer = added_files[0].file_id
+        refresh_all()
+
+    return {"added": len(added_files), "skipped": skipped}
+
+
+async def open_workspace_file_picker():
+    def pick():
+        import tkinter as _tk
+        from tkinter import filedialog as _fd
+        root = _tk.Tk()
+        root.attributes('-topmost', True)
+        root.withdraw()
+        paths = _fd.askopenfilenames(
+            title='Select files to add to the workspace',
+            filetypes=[
+                ('Source files', '*.py *.c *.cpp *.h *.hpp *.r *.rmd'),
+                ('All files', '*.*'),
+            ],
+        )
+        root.destroy()
+        return list(paths)
+
+    paths = await asyncio.to_thread(pick)
+    if not paths:
+        return
+
+    from backend.import_utils import _guess_lang
+    imported_files: list[ProjectFile] = []
+    skipped = 0
+
+    for p in paths:
+        fname = Path(p).name
+        if any(existing.path == p for existing in state.files.values()):
+            skipped += 1
+            continue
+
+        try:
+            with open(p, 'r', encoding='utf-8', errors='replace') as fh:
+                content = fh.read()
+            pf = ProjectFile(
+                file_id=f'f_{uuid.uuid4().hex[:8]}',
+                path=p,
+                legacy_source=content,
+                ai_source='',
+                status=FileStatus.QUEUED,
+                language=_guess_lang(fname),
+            )
+            imported_files.append(pf)
+        except Exception:
+            continue
+
+    result = merge_project_files_into_workspace(imported_files)
+    if skipped:
+        show_alert(f"Skipped {skipped} duplicate file(s).", alert_type='warning')
+    if not imported_files and not skipped:
+        show_alert('No readable files were selected.', alert_type='warning')
+    elif result['added'] and skipped:
+        show_alert(f"Added {result['added']} file(s) to the workspace. Skipped {skipped} duplicate file(s).", alert_type='positive')
+    elif result['added']:
+        show_alert(f"Added {result['added']} file(s) to the workspace.", alert_type='positive')
+
+
+async def add_project_to_workspace_from_dialog():
+    def pick():
+        root = tk.Tk()
+        root.attributes('-topmost', True)
+        root.withdraw()
+        folder = filedialog.askdirectory(title='Select project folder to add to the workspace')
+        root.destroy()
+        return folder
+
+    folder = await asyncio.to_thread(pick)
+    if not folder:
+        return
+
+    try:
+        imported_files = import_local_project(folder)
+    except Exception as exc:
+        show_alert(f'Failed to import project: {exc}', alert_type='negative')
+        return
+
+    if not imported_files:
+        show_alert('No readable source files found in that directory.', alert_type='warning')
+        return
+
+    result = merge_project_files_into_workspace(imported_files, source_root=folder)
+    if result['added']:
+        if result['skipped']:
+            show_alert(f"Added {result['added']} file(s) from the selected project. Skipped {result['skipped']} duplicate file(s).", alert_type='positive')
+        else:
+            show_alert(f"Added {result['added']} file(s) from the selected project.", alert_type='positive')
+    elif result['skipped']:
+        show_alert('All selected files were already present in the workspace.', alert_type='warning')
+
 
 def push_log(file_id: str, message: str):
     if file_id not in state.execution_logs:
@@ -281,22 +518,31 @@ def save_and_retest(file_id: str, widget_value: str):
     asyncio.create_task(simulate_sandbox(file_id))
 
 def refresh_all():
-    if getattr(state, 'drawer', None) is not None:
-        if state.files and not state.import_mode:
-            state.drawer.set_visibility(True)
-            state.drawer.show()  # <-- Forces the layout to expand
-        else:
-            state.drawer.set_visibility(False)
-            state.drawer.hide()  # <-- Reclaims the sidebar space
-            
-    render_sidebar.refresh()
-    render_main.refresh()
+    try:
+        if getattr(state, 'drawer', None) is not None:
+            if state.files and not state.import_mode:
+                state.drawer.set_visibility(True)
+                state.drawer.show()  # <-- Forces the layout to expand
+            else:
+                state.drawer.set_visibility(False)
+                state.drawer.hide()  # <-- Reclaims the sidebar space
+    except Exception:
+        pass
+
+    try:
+        render_sidebar.refresh()
+        render_main.refresh()
+    except Exception:
+        pass
 
 def build_orchestrator_payload(file_id: str) -> dict:
     f = get_file(file_id)
+    import dataclasses
+    f_dict = dataclasses.asdict(f)
+    f_dict['status'] = f.status.value if hasattr(f.status, 'value') else f.status
     return {
         "session_id": state.session_id,
-        "target_file": f,
+        "target_file": f_dict,
         "file_path": f.path,
         "workspace_dir": state.project_root,
         "system_prompt": "",
@@ -362,21 +608,67 @@ async def _trigger_backend_run(file_id: str):
             payload["target_file"] = vars(target_file)
 
     async with httpx.AsyncClient() as client:
-        await client.post(f"http://localhost:8000/api/run/{state.session_id}", json=payload)
+        try:
+            await client.post(f"http://localhost:8000/api/run/{state.session_id}", json=payload, timeout=10.0)
+        except Exception as exc:
+            raise RuntimeError(f"Backend request failed: {exc}") from exc
+    return True
 
 # ============================================================================
 # ASYNC SIMULATIONS (LANGGRAPH NODES)
 # ============================================================================
 async def simulate_translation(file_id: str):
+    if file_id not in state.files:
+        return
+
+    state.is_thinking = True
+    state.agent_state[file_id] = "Starting"
+    state.files[file_id].status = FileStatus.TRANSLATING
     push_log(file_id, f"Initializing AgentState with workspace: {state.project_root}")
-    await _trigger_backend_run(file_id)
+
+    try:
+        await _trigger_backend_run(file_id)
+    except Exception as exc:
+        state.files[file_id].status = FileStatus.FAILED
+        state.agent_state[file_id] = "Failed"
+        push_log(file_id, f"[System] Translation failed: {exc}")
+        show_alert(f"Translation could not start: {exc}", alert_type='warning')
+    finally:
+        state.is_thinking = False
+        refresh_all()
 
 async def simulate_sandbox(file_id: str, is_chained: bool = False):
     push_log(file_id, f"Initializing AgentState with workspace: {state.project_root}")
     await _trigger_backend_run(file_id)
 
 def run_translation_simulation(file_id: str):
-    background_tasks.create(simulate_translation(file_id))
+    if file_id not in state.files:
+        return
+
+    state.is_thinking = True
+    state.agent_state[file_id] = "Starting"
+    state.files[file_id].status = FileStatus.TRANSLATING
+
+    try:
+        refresh_all()
+    except Exception:
+        pass
+
+    if not state.session_id:
+        state.agent_state[file_id] = "Starting"
+        show_alert("Translation started locally; backend session is not ready yet.", alert_type='warning')
+        return
+
+    try:
+        background_tasks.create(simulate_translation(file_id))
+    except Exception:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            loop.create_task(simulate_translation(file_id))
 
 def run_sandbox_simulation(file_id: str):
     background_tasks.create(simulate_sandbox(file_id))
@@ -385,99 +677,256 @@ def run_sandbox_simulation(file_id: str):
 # WELCOME SCREEN
 # ============================================================================
 def render_welcome():
-    # Forceful CSS injected directly into the head to override Quasar defaults
     ui.add_css('''
         body .welcome-import-card {
             background-color: #ffffff !important;
-            transition: all 0.2s ease-in-out !important;
+            transition: all 0.15s ease-in-out !important;
         }
         body .welcome-import-card:hover {
-            background-color: #3b82f6 !important; /* Blue background on hover */
+            background-color: #3b82f6 !important;
+            transform: translate(-2px, -2px);
+            box-shadow: 6px 6px 0px 0px #101010 !important;
         }
-        body .welcome-import-card:hover, 
+        body .welcome-import-card:hover,
         body .welcome-import-card:hover * {
-            color: #ffffff !important; /* Force all internal text to white on hover */
+            color: #ffffff !important;
         }
     ''')
 
-    with ui.column().classes('w-full items-center justify-center pt-20 pb-10'):
+    async def handle_upload(e: events.UploadEventArguments):
+        try:
+            from backend.import_utils import import_from_uploads
+            imported_files = await import_from_uploads([e])
+            for f in imported_files:
+                name = f.path or e.name
+                if any(entry.get('name') == name for entry in state.staging_files):
+                    show_alert(f"Skipped duplicate file: {name}", alert_type='warning')
+                    continue
+
+                size_bytes = len(f.legacy_source.encode('utf-8'))
+                size_str = f'{size_bytes / 1024:.1f} KB' if size_bytes >= 1024 else f'{size_bytes} B'
+                state.staging_files.append({
+                    'name': name,
+                    'size_str': size_str,
+                    'pct': 100,
+                    'status': 'done',
+                    'project_file': f,
+                })
+        except Exception:
+            e_name = getattr(e, 'name', getattr(getattr(e, 'file', None), 'name', getattr(getattr(e, 'file', None), 'filename', 'unknown_file')))
+            state.staging_files.append({
+                'name': e_name, 'size_str': '?', 'pct': 100, 'status': 'failed', 'project_file': None,
+            })
+
+    def finish_upload(e=None):
+        if state.staging_files:
+            state.import_mode = "STAGING"
+        refresh_all()
+
+    # ================================================================
+    # STAGING SCREEN — file review before entering workspace
+    # ================================================================
+    if state.import_mode == "STAGING":
+        summary = get_staging_summary_counts()
+        total = summary["total"]
+        done = summary["done"]
+        failed = summary["failed"]
+        uploading = summary["uploading"]
+
+        with ui.column().classes('w-full items-center justify-center pt-8 pb-8 gap-0'):
+            ui.html('''
+                <div class="welcome-screen">
+                    <div class="welcome-kicker">📋 REVIEW YOUR FILES</div>
+                    <div style="font-family:'Archivo Black',sans-serif;font-weight:900;font-size:3rem;
+                                color:#101010;text-transform:uppercase;margin-bottom:8px;">
+                        STAGING AREA
+                    </div>
+                    <div class="welcome-desc">
+                        Verify your files below. Remove unwanted files, retry failures, then proceed.
+                    </div>
+                </div>
+            ''')
+
+            with ui.column().classes('w-full max-w-4xl px-4 gap-0 items-center'):
+
+                # ── Summary bar & Add Files ─────────────────────────
+                with ui.row().classes('w-full justify-center items-center gap-6 mb-4'):
+                    ui.html(f'''
+                        <div style="display:flex;gap:12px;align-items:center;">
+                            <div class="dz-status-badge">\U0001f4c1 {total} files</div>
+                            <div class="dz-status-badge" style="background:#00c853;color:#101010;">\u2705 {done} ready</div>
+                            {'<div class="dz-status-badge" style="background:#ff3333;color:#101010;">\u274c ' + str(failed) + ' failed</div>' if failed else ''}
+                            {'<div class="dz-status-badge" style="background:#f5c518;color:#101010;">\u23f3 ' + str(uploading) + ' uploading</div>' if uploading else ''}
+                        </div>
+                    ''')
+                    ui.html('<div style="width:2px; height:28px; background:#101010; opacity:0.2;"></div>')
+                    with ui.row().classes('gap-4'):
+                        ui.button('+ Files', on_click=open_file_picker).props('color=white text-color=black flat').classes(
+                            'border-2 border-black font-black px-4 py-1 hover:-translate-y-px hover:-translate-x-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all'
+                        )
+                        ui.button('+ Project', on_click=handle_native_import_project).props('color=white text-color=black flat').classes(
+                            'border-2 border-black font-black px-4 py-1 hover:-translate-y-px hover:-translate-x-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all'
+                        )
+
+                # ── File list ───────────────────────────────────────
+                with ui.element('div').classes('dz-file-list-container mb-4').style('display: flex; flex-direction: column;'):
+                    if not state.staging_files:
+                        ui.html('<div style="text-align:center; padding: 40px; font-weight:bold; color:#666;">Staging area empty. Click "+ Files" or "+ Project" above to import.</div>')
+                    else:
+                        with ui.element('div').classes('w-full relative'):
+                            with ui.column().classes('w-full gap-2 dz-file-list'):
+                                for entry in state.staging_files:
+                                    pct  = entry.get('pct', 100)
+                                    stat = entry.get('status', 'done')
+                                    name = entry.get('name', '?')
+                                    size = entry.get('size_str', '?')
+
+                                    if stat == 'done':
+                                        status_html = '<div class="dz-file-status-icon done">&#10004;</div>'
+                                    elif stat == 'failed':
+                                        status_html = '<div class="dz-file-status-icon" style="color:#ff3333;">&#10008;</div>'
+                                    else:
+                                        status_html = f'<div class="dz-file-status-icon" style="font-size:10px;">{pct}%</div>'
+
+                                    with ui.element('div').classes('dz-file-row'):
+                                        ui.html(f'<div class="dz-merged-icon">{status_html}<div class="dz-file-icon">\U0001f4c4</div></div>')
+                                        ui.html(f'<div class="dz-file-name-container"><span class="dz-file-name">{name}</span><span class="dz-file-size">{size}</span></div>')
+                                        
+                                        if stat == 'done':
+                                            ui.html('<div></div>')
+                                        else:
+                                            ui.html(f'''
+                                                <div class="dz-file-progress-wrapper">
+                                                    <div class="dz-file-progress-bar {'failed' if stat == 'failed' else 'uploading' if stat == 'uploading' else ''}" style="width:{pct}%;"></div>
+                                                </div>
+                                            ''')
+
+                                        if stat == 'failed':
+                                            def do_retry(ent=entry):
+                                                ent['status'] = 'done'
+                                                ent['pct'] = 100
+                                                refresh_all()
+                                            ui.button('Retry', on_click=lambda _, ent=entry: do_retry(ent)).classes('dz-action-btn')
+                                        else:
+                                            def do_replace(ent=entry):
+                                                import time
+                                                
+                                                # Discard queued clicks that happened while we were blocked
+                                                last_pick = getattr(state, '_last_pick_end', 0)
+                                                if time.time() - last_pick < 0.5:
+                                                    return
+                                                    
+                                                if getattr(state, '_is_picking', False):
+                                                    return
+                                                    
+                                                state._is_picking = True
+                                                try:
+                                                    def pick():
+                                                        import tkinter as _tk
+                                                        from tkinter import filedialog as _fd
+                                                        root = _tk.Tk()
+                                                        root.attributes('-topmost', True)
+                                                        root.withdraw()
+                                                        path = _fd.askopenfilename(title='Replace file')
+                                                        root.destroy()
+                                                        return path
+                                                        
+                                                    path = pick()
+                                                    if path:
+                                                        try:
+                                                            with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+                                                                content = fh.read()
+                                                            from backend.import_utils import _guess_lang
+                                                            fname = Path(path).name
+                                                            pf = ProjectFile(
+                                                                file_id=f'f_{uuid.uuid4().hex[:8]}',
+                                                                path=path,
+                                                                legacy_source=content,
+                                                                ai_source='',
+                                                                status=FileStatus.QUEUED,
+                                                                language=_guess_lang(fname),
+                                                            )
+                                                            ent['name'] = fname
+                                                            ent['size_str'] = f'{len(content.encode("utf-8")) / 1024:.1f} KB'
+                                                            ent['pct'] = 100
+                                                            ent['status'] = 'done'
+                                                            ent['project_file'] = pf
+                                                            refresh_all()
+                                                        except Exception:
+                                                            pass
+                                                finally:
+                                                    state._is_picking = False
+                                                    state._last_pick_end = time.time()
+                                            btn_replace = ui.button('Replace', on_click=lambda _, ent=entry: do_replace(ent)).props('color=white text-color=black').classes('dz-action-btn dz-replace-btn')
+                                            if stat == 'uploading':
+                                                btn_replace.props('disable')
+
+                                        def do_remove(ent=entry):
+                                            if ent in state.staging_files:
+                                                state.staging_files.remove(ent)
+                                                refresh_all()
+                                        ui.button('Remove', on_click=lambda _, ent=entry: do_remove(ent)).props('color=white text-color=red').classes('dz-action-btn dz-remove-btn')
+
+                # ── Proceed / Cancel ────────────────────────────────
+                with ui.row().classes('w-full justify-center gap-4 mt-2'):
+                    def cancel_staging():
+                        state.staging_files = []
+                        state.import_mode = None
+                        refresh_all()
+
+                    ui.button('Cancel', on_click=cancel_staging).props('color=white text-color=red').classes(
+                        'dz-cancel-btn border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-black px-8 py-2 hover:-translate-y-px hover:-translate-x-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all'
+                    )
+                    ui.button(
+                        f'Proceed with {done} file{"s" if done != 1 else ""}',
+                        on_click=commit_staging_to_workspace,
+                    ).props('color=blue').classes(
+                        'border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-black px-8 py-2 hover:-translate-y-px hover:-translate-x-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all'
+                    )
+        return
+
+    # ================================================================
+    # WELCOME SCREEN — initial landing page
+    # ================================================================
+    with ui.column().classes('w-full items-center justify-center pt-8 pb-8 gap-0'):
         ui.html('''
             <div class="welcome-screen">
-                <div class="welcome-kicker">⚙️ LEGACY CODE MODERNIZATION TOOL</div>
+                <div class="welcome-kicker">\u2699\ufe0f LEGACY CODE MODERNIZATION TOOL</div>
                 <div class="welcome-title">REVIVO<span class="welcome-title-accent">AI</span></div>
                 <div class="welcome-desc">
-                    Turn brittle legacy systems into modern, sandbox-verified code.<br>
-                    AI drafts the patch. The sandbox proves it works. You stay in control.
+                    Turn brittle legacy systems into modern, sandbox-verified code.
                 </div>
             </div>
         ''')
-        
-        with ui.row().classes('w-full max-w-5xl justify-center gap-8 px-4'):
-            if state.import_mode == "FILES":
-                with ui.column().classes('w-full max-w-lg'):
-                    ui.markdown("### Upload Files")
-                    async def handle_upload(e: events.UploadEventArguments):
-                        imported_files = await import_from_uploads([e])
-                        if imported_files:
-                            for f in imported_files:
-                                state.files[f.file_id] = f
-                            state.active_buffer = imported_files[0].file_id
-                            if not state.project_root:
-                                state.project_root = str(Path.cwd() / "revivo_workspace")
-                                os.makedirs(state.project_root, exist_ok=True)
 
-                            # Ensure uploaded files are tied to an active backend session.
-                            if not state.session_handler or not state.session_id:
-                                state.session_handler = SessionHandler()
-                                session_id = await state.session_handler.initialize_session(user_id="ea3491cd-7390-4c8f-a420-e15aa731b29a")
-                                state.session_id = session_id
-                                if session_id:
-                                    background_tasks.create(websocket_listener(session_id))
+        with ui.column().classes('w-full max-w-6xl px-4 gap-4 items-center'):
 
-                            # Ensure MCP client is available for later file write operations.
-                            if not state.mcp_client and state.project_root:
-                                state.mcp_client = MCPClient(server_uri="local://revivoai", allowed_root_path=state.project_root)
+            # ── Import buttons ────────────────────────────────────────────
+            with ui.row().classes('w-full justify-center items-stretch gap-8 mt-8'):
 
-                                async def connect_mcp_upload():
-                                    await asyncio.sleep(0.1)
-                                    state.mcp_client.connect()
+                with ui.card().classes(
+                    'welcome-import-card flex-1 cursor-pointer flex flex-col items-center justify-center text-center '
+                    'border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] p-12 min-h-[200px]'
+                ) as card1:
+                    ui.html('<div class="welcome-import-title" style="font-size:2.5rem;margin-bottom:16px;">IMPORT FILES</div>'
+                            '<div class="welcome-import-desc" style="font-size:1.25rem;">Select individual source files to translate.<br>Best for targeting a few specific files.</div>')
+                    card1.on('click', open_file_picker)
 
-                                asyncio.create_task(connect_mcp_upload())
+                with ui.card().classes(
+                    'welcome-import-card flex-1 cursor-pointer flex flex-col items-center justify-center text-center '
+                    'border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] p-12 min-h-[200px]'
+                ) as card2:
+                    ui.html('<div class="welcome-import-title" style="font-size:2.5rem;margin-bottom:16px;">IMPORT PROJECT</div>'
+                            '<div class="welcome-import-desc" style="font-size:1.25rem;">Scan a local directory tree for source files.<br>Best for translating an entire codebase.</div>')
+                    card2.on('click', handle_native_import_project)
 
-                            state.import_mode = None
-                            show_alert("Upload complete. You can now start AI translation.", alert_type='positive')
-                            refresh_all()
-                        else:
-                            show_alert("Upload failed or file type is unsupported.", alert_type='warning')
-                    ui.upload(on_upload=handle_upload, multiple=True, auto_upload=True).classes('w-full')
-                    with ui.row().classes('w-full gap-4 mt-4'):
-                        ui.button("Cancel", on_click=lambda: (setattr(state, 'import_mode', None), refresh_all())).classes('flex-1')
-                        
-            else:
-                with ui.column().classes('w-full items-center pt-16'):
-                    with ui.row().classes('w-full max-w-7xl justify-center items-stretch gap-8 mb-8'):
-                        
-                        # Added `welcome-import-card` for our aggressive CSS override target
-                        with ui.card().classes(
-                            'welcome-import-card flex-1 cursor-pointer flex flex-col items-center justify-center text-center '
-                            'border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-8'
-                        ) as card1:
-                            ui.html('<div class="welcome-import-title">IMPORT FILES</div><div class="welcome-import-desc">Select individual source files to translate. Best for targeting a few specific files.</div>')
-                            card1.on('click', lambda: (setattr(state, 'import_mode', "FILES"), refresh_all()))
-                            
-                        with ui.card().classes(
-                            'welcome-import-card flex-1 cursor-pointer flex flex-col items-center justify-center text-center '
-                            'border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-8'
-                        ) as card2:
-                            ui.html('<div class="welcome-import-title">IMPORT PROJECT</div><div class="welcome-import-desc">Scan a local directory tree for source files. Best for translating an entire codebase.</div>')
-                            card2.on('click', handle_native_import_project)
-                            
-                    ui.html('<div class="text-gray-400 font-bold mb-8">--- OR ---</div>')
-                    
-                    # Passed Quasar's native color prop `color=blue` 
-                    ui.button("Load Demo Project (Mock Data)", on_click=load_demo_project).props('color=blue').classes(
-                        'w-full max-w-lg mt-8 border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-black py-4 text-lg'
-                    )
+            # ── Demo button ───────────────────────────────────────────────
+            ui.html('<div style="color:#888;font-weight:700;font-size:0.9rem;margin:8px 0;">\u2500\u2500\u2500 OR \u2500\u2500\u2500</div>')
+            ui.button('Load Demo Project (Mock Data)', on_click=load_demo_project).props('color=blue').classes(
+                'w-full max-w-md border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-black py-2'
+            )
+
+
 
 # ============================================================================
 # SIDEBAR
@@ -498,11 +947,11 @@ def render_sidebar():
                     'hover:after:h-full focus:ring-2 focus:ring-yellow-300 focus:outline-0 border border-gray-300 hover:border-black'
                 )
                 
-                f_btn = ui.element('div').classes(btn_cls).on('click', lambda: (setattr(state, 'import_mode', "FILES"), refresh_all()))
+                f_btn = ui.element('div').classes(btn_cls).on('click', open_workspace_file_picker)
                 with f_btn:
                     ui.label('+ Files').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
                     
-                p_btn = ui.element('div').classes(btn_cls).on('click', handle_native_import_project)
+                p_btn = ui.element('div').classes(btn_cls).on('click', add_project_to_workspace_from_dialog)
                 with p_btn:
                     ui.label('+ Project').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
             

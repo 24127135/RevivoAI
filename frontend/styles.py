@@ -587,7 +587,7 @@ section[data-testid="stSidebar"],
 */
 .welcome-screen {{
     text-align: center;
-    padding: 56px 24px 32px 24px;
+    padding: 32px 24px 16px 24px;
 }}
 .welcome-kicker {{
     display: inline-block;
@@ -603,33 +603,32 @@ section[data-testid="stSidebar"],
 .welcome-title {{
     font-family: 'Archivo Black', 'Space Grotesk', sans-serif !important;
     font-weight: 900 !important;
-    font-size: 12rem !important;
+    font-size: 8.5rem !important;
     line-height: 0.95 !important;
     color: var(--neo-black) !important;
     text-transform: uppercase !important;
     letter-spacing: -0.02em !important;
-    margin-bottom: var(--space-4) !important;
+    margin-bottom: var(--space-2) !important;
     white-space: nowrap;
 }}
 .welcome-title-accent {{
     color: var(--neo-black);
 }}
 .welcome-desc {{
-    font-size: 1.4rem;
+    font-size: 1.6rem;
     font-weight: 700;
     color: var(--neo-black);
     max-width: 900px;
-    margin: 0 auto var(--space-2) auto;
-    line-height: 1.5;
+    margin: 0 auto 8px auto;
+    line-height: 1.4;
 }}
 .welcome-import-card {{
     background: var(--neo-white);
     border: 4px solid var(--neo-black);
-    box-shadow: 6px 6px 0px 0px var(--neo-black);
-    padding: 24px 16px; /* Reduced footprint */
+    box-shadow: 4px 4px 0px 0px var(--neo-black);
+    padding: 12px 16px;
     text-align: center;
     transition: transform 0.1s, background-color 0.1s, box-shadow 0.1s;
-    height: 100%;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -637,16 +636,205 @@ section[data-testid="stSidebar"],
 .welcome-import-title {{
     font-family: 'Archivo Black', 'Space Grotesk', sans-serif;
     font-weight: 900;
-    font-size: 2.5rem; /* Much larger font */
+    font-size: 1.4rem;
     letter-spacing: 0.01em;
     color: var(--neo-black);
-    margin-bottom: 8px;
+    margin-bottom: 4px;
 }}
 .welcome-import-desc {{
-    font-size: 1.05rem; 
-    font-weight: 600; /* Back to normal reading weight */
-    color: #444; /* Softer color so it recedes behind the title */
-    line-height: 1.45;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: #555;
+    line-height: 1.35;
+}}
+.welcome-import-sub {{
+    font-family: 'MonoNerdfont', 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace;
+    font-weight: 700; /* Normal bold, not ultra-black */
+    font-size: 0.85rem; /* Smaller text */
+    letter-spacing: 0.05em;
+    color: var(--neo-black);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+}}
+
+/* Welcome screen takeover */
+.q-page-container:has(.welcome-screen), body:has(.welcome-screen) {{
+    background-color: var(--neo-yellow) !important;
+    background-image: radial-gradient(circle, rgba(16,16,16,0.16) 1.5px, transparent 1.5px) !important;
+    background-size: 14px 14px !important;
+    padding: 0 !important;
+    min-height: 100vh !important;
+}}
+
+/* 
+9. LANGGRAPH STATE MACHINE TRACKER
+*/
+.langgraph-tracker {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    background: var(--neo-white);
+    border: 3px solid var(--neo-black);
+    box-shadow: 6px 6px 0px 0px var(--neo-black);
+    margin-bottom: 24px;
+    font-family: 'Space Grotesk', sans-serif;
+    gap: 12px;
+}}
+.lg-node {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 900;
+    text-transform: uppercase;
+    font-size: 0.95rem;
+    padding: 8px 16px;
+    border: 3px solid var(--neo-black);
+    background: var(--neo-white);
+    color: var(--neo-black);
+    position: relative;
+    z-index: 2;
+    flex: 1;
+    text-align: center;
+}}
+.lg-node.active {{
+    background: var(--neo-yellow);
+    box-shadow: 3px 3px 0px 0px var(--neo-black);
+    transform: translate(-1px, -1px);
+}}
+.lg-node.completed {{
+    background: var(--neo-green);
+    color: var(--neo-black);
+}}
+.lg-node.pending {{
+    background: #f0f0f0;
+    color: #999;
+    border-color: #999;
+}}
+.lg-arrow {{
+    width: 24px;
+    height: 4px;
+    background: var(--neo-black);
+    position: relative;
+    z-index: 1;
+    flex-shrink: 0;
+}}
+.lg-arrow::after {{
+    content: '';
+    position: absolute;
+    right: -6px;
+    top: -5px;
+    border-top: 7px solid transparent;
+    border-bottom: 7px solid transparent;
+    border-left: 8px solid var(--neo-black);
+}}
+.lg-arrow.pending {{
+    background: #999;
+}}
+.lg-arrow.pending::after {{
+    border-left-color: #999;
+}}
+
+/* 
+10. DOCKER TERMINAL UI
+*/
+.docker-terminal {{
+    background-color: #1e1e1e;
+    color: #fdfbf7;
+    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace !important;
+    font-size: 0.9rem;
+    padding: 16px;
+    border: 3px solid var(--neo-black);
+    box-shadow: 6px 6px 0px 0px var(--neo-black);
+    margin-top: 16px;
+    height: 350px;
+    overflow-y: auto;
+    line-height: 1.5;
+    position: relative;
+}}
+.docker-terminal .term-line {{
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+}}
+.docker-terminal .term-error {{
+    color: var(--neo-red);
+    font-weight: bold;
+}}
+.docker-terminal .term-warn {{
+    color: var(--neo-yellow);
+}}
+.docker-terminal .term-info {{
+    color: var(--neo-blue);
+}}
+.docker-terminal .term-success {{
+    color: var(--neo-green);
+}}
+
+/* 
+11. ACTION CENTER PEEK & POP
+*/
+.action-peek {{
+    transform: translateY(calc(100% - 80px));
+    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}}
+.action-peek:hover {{
+    transform: translateY(-24px);
+}}
+
+@keyframes action-float {{
+    0% {{ transform: translateY(0px) scale(1); }}
+    50% {{ transform: translateY(-6px) scale(1.04); }}
+    100% {{ transform: translateY(0px) scale(1); }}
+}}
+.animate-action-float {{
+    animation: action-float 1.2s ease-in-out infinite;
+}}
+
+
+/* Clean Action Pill Buttons */
+.action-pill-btn {{
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 9999px !important;
+    text-transform: none !important;
+}}
+.action-pill-btn:hover {{
+    transform: none !important;
+    box-shadow: none !important;
+}}
+.action-pill-btn:active {{
+    transform: scale(0.95) !important;
+    box-shadow: none !important;
+}}
+
+/* DropZone outer wrapper */
+.dropzone-wrapper {{
+    width: 100%;
+    margin-bottom: 20px;
+    position: relative;
+}}
+
+    padding: 12px 16px;
+    text-align: center;
+    transition: transform 0.1s, background-color 0.1s, box-shadow 0.1s;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}}
+.welcome-import-title {{
+    font-family: 'Archivo Black', 'Space Grotesk', sans-serif;
+    font-weight: 900;
+    font-size: 1.4rem;
+    letter-spacing: 0.01em;
+    color: var(--neo-black);
+    margin-bottom: 4px;
+}}
+.welcome-import-desc {{
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: #555;
+    line-height: 1.35;
 }}
 .welcome-import-sub {{
     font-family: 'MonoNerdfont', 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace;
@@ -813,6 +1001,313 @@ section[data-testid="stSidebar"],
 .action-pill-btn:active {{
     transform: scale(0.95) !important;
     box-shadow: none !important;
+}}
+
+/* DropZone outer wrapper */
+.dropzone-wrapper {{
+    width: 100%;
+    margin-bottom: 20px;
+    position: relative;
+}}
+
+/* The actual styled drop area */
+.dropzone-area {{
+    width: 100%;
+    border: 3px solid #101010;
+    background: #ffffff;
+    box-shadow: 5px 5px 0px 0px #101010;
+    transition: box-shadow 0.2s, transform 0.2s, border-color 0.2s, background 0.2s;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 36px 24px 28px 24px;
+    min-height: 160px;
+    position: relative;
+    overflow: hidden;
+}}
+
+
+/* dragover state via JS class */
+.dropzone-area.dz-dragover {{
+    background: #e6f7ff !important;
+    border-color: #007bff !important;
+    box-shadow: 0 0 0 3px #007bff, 8px 8px 0px 0px #101010 !important;
+    transform: scale(1.015) !important;
+}}
+
+.dropzone-title {{
+    font-family: 'Archivo Black', 'Space Grotesk', sans-serif;
+    font-weight: 900;
+    font-size: 1.5rem;
+    color: #101010;
+    text-transform: uppercase;
+    letter-spacing: -0.01em;
+    text-align: center;
+    margin-bottom: 6px;
+    pointer-events: none;
+}}
+
+.dropzone-area.dz-dragover .dropzone-title {{
+    color: #007bff;
+}}
+
+.dropzone-hint {{
+    font-family: 'JetBrainsMono Nerd Font', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #444;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    pointer-events: none;
+}}
+
+.dropzone-icon {{
+    font-size: 3rem;
+    margin-bottom: 8px;
+    pointer-events: none;
+    transition: transform 0.2s;
+}}
+
+
+/* The q-uploader itself — hidden but functional, overlaid on the dropzone */
+.dropzone-uploader {{
+    position: absolute !important;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100% !important;
+    height: 100% !important;
+    opacity: 0 !important;
+    z-index: 50 !important;
+    cursor: pointer !important;
+}}
+.dropzone-uploader .q-uploader__header, 
+.dropzone-uploader .q-uploader__dnd {{
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 160px !important;
+}}
+
+/* FILE LIST AREA (below dropzone) */
+.dz-file-list-container {{
+    width: 100%;
+    max-height: 45vh;
+    overflow-y: auto;
+    border: 2px solid #101010;
+    background: #ffffff;
+    padding: 0;
+}}
+
+/* Invisible drop overlay for file list */
+.list-uploader-overlay {{
+    pointer-events: none !important;
+}}
+body.is-dragging .list-uploader-overlay {{
+    pointer-events: auto !important;
+}}
+
+/* Custom scrollbar for file list */
+.dz-file-list-container::-webkit-scrollbar {{
+    width: 12px;
+}}
+.dz-file-list-container::-webkit-scrollbar-track {{
+    background: #f1f1f1;
+    border-left: 2px solid #101010;
+}}
+.dz-file-list-container::-webkit-scrollbar-thumb {{
+    background: #101010;
+    border-left: 2px solid #101010;
+}}
+
+.dz-file-list {{
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}}
+
+.dz-file-row {{
+    display: grid;
+    grid-template-columns: 50px minmax(140px, 220px) 1fr 90px 90px;
+    width: 100%;
+    align-items: center;
+    column-gap: 12px;
+    border: none;
+    border-bottom: 1px solid #101010;
+    background: transparent;
+    padding: 12px 16px;
+}}
+.dz-file-row:last-child {{
+    border-bottom: none;
+}}
+
+.dz-merged-icon {{
+    display: flex;
+    align-items: center;
+    border: 2px solid #101010;
+    background: #f0f0f0;
+    width: fit-content;
+}}
+
+.dz-file-icon {{
+    width: 24px;
+    height: 24px;
+    border-left: 2px solid #101010;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+}}
+
+.dz-file-name-container {{
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    overflow: hidden;
+}}
+
+.dz-file-name {{
+    font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', Consolas, monospace;
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #101010;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}}
+
+.dz-file-size {{
+    font-family: 'JetBrainsMono Nerd Font', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #777;
+    white-space: nowrap;
+}}
+
+.dz-file-progress-area {{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+}}
+
+.dz-file-progress-wrapper {{
+    flex: 1;
+    height: 12px;
+    border: 2px solid #101010;
+    background: #e0e0e0;
+    display: flex;
+}}
+
+.dz-file-progress-bar {{
+    height: 100%;
+    background: #00c853;
+    transition: width 0.3s ease;
+}}
+
+.dz-file-progress-bar.failed {{
+    background: #ff3333;
+}}
+
+.dz-file-progress-bar.uploading {{
+    background: #f5c518;
+}}
+
+.dz-file-status-icon {{
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 900;
+    flex-shrink: 0;
+}}
+
+.dz-file-status-icon.done {{
+    background: #00c853;
+    color: #101010;
+}}
+
+.dz-action-btn {{
+    width: 100% !important;
+    height: 28px !important;
+    min-height: 28px !important;
+    padding: 0 !important;
+    border: 2px solid #101010 !important;
+    background: #ffffff !important;
+    border-radius: 0 !important;
+    font-weight: 900 !important;
+    font-size: 10px !important;
+    box-shadow: 4px 4px 0px 0px #101010 !important;
+    transition: transform 0.1s, box-shadow 0.1s !important;
+}}
+
+.dz-action-btn:hover:not(:disabled) {{
+    transform: translate(2px, 2px) !important;
+    box-shadow: 2px 2px 0px 0px #101010 !important;
+}}
+.dz-action-btn:active:not(:disabled) {{
+    transform: translate(4px, 4px) !important;
+    box-shadow: 0px 0px 0px 0px #101010 !important;
+}}
+.dz-action-btn:disabled {{
+    opacity: 0.5 !important;
+    box-shadow: none !important;
+    transform: none !important;
+    background: #f0f0f0 !important;
+}}
+
+.dz-replace-btn {{
+    color: #101010 !important;
+}}
+.dz-replace-btn:hover:not(:disabled) {{
+    background: #f5c518 !important;
+    color: #101010 !important;
+}}
+
+.dz-remove-btn {{
+    color: #ff3333 !important;
+}}
+.dz-remove-btn:hover:not(:disabled) {{
+    background: #ff3333 !important;
+    color: #ffffff !important;
+}}
+
+.dz-status-badge {{
+    border: 2px solid #101010;
+    padding: 4px 12px;
+    background: #ffffff;
+    font-weight: 900;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}}
+
+/* Checkbox (global override if used) */
+.dz-checkbox {{
+    width: 18px;
+    height: 18px;
+    border: 2px solid #101010;
+    background: #fff;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 900;
+    font-size: 12px;
+    color: #101010;
+}}
+.dz-checkbox.checked {{
+    background: #00c853;
 }}
 
 </style>

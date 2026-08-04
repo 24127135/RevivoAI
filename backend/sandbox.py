@@ -61,10 +61,11 @@ class DockerSandboxManager:
             )
             self._container_id = self._container.id
 
-            # Hand over ownership of the workspace to the restricted non-root user
+            # One-time root init: prepare a workspace directory owned by the
+            # non-root user so per-file mkdir calls in injectCode() never need root.
             if self._run_as_non_root:
                 self._container.exec_run(
-                    f"chown -R 1000:1000 {self._WORKSPACE_ROOT}",
+                    f"mkdir -p {self._WORKSPACE_ROOT} && chown -R 1000:1000 {self._WORKSPACE_ROOT}",
                     user="root"
                 )
 
@@ -75,13 +76,16 @@ class DockerSandboxManager:
 
     def _validate_container_path(self, containerPath: str) -> str:
         """
-        Ensures containerPath resolves strictly inside the bounded workspace root.
+        Mirrors the role of MCPClient.validatePath() but scoped to the sandbox
+        filesystem: ensures containerPath resolves strictly inside the bounded
+        workspace root, rejecting '..' traversal and absolute escapes, and
+        returns the normalized absolute path to use for tar/mkdir.
         Sanitizes absolute Windows host paths down to valid Linux basenames.
         """
         if not containerPath or not containerPath.strip():
             raise ValueError("containerPath must not be empty.")
 
-        # <--- Fix 2: Sanitize absolute Windows paths leaked from the host
+        # Sanitize absolute Windows paths leaked from the host
         containerPath = containerPath.replace('\\', '/')
         if ":" in containerPath:
             containerPath = containerPath.split("/")[-1]
@@ -103,7 +107,11 @@ class DockerSandboxManager:
 
     def injectCode(self, containerPath: str, content: str) -> None:
         """
-        Pushes the candidate code directly into the ephemeral container's filesystem.
+        Bypasses circular dependency by pushing the candidate code directly into the
+        ephemeral container's isolated filesystem via a tarball stream.
+
+        containerPath is validated against the sandbox workspace root before any
+        filesystem operation is attempted (see _validate_container_path).
         """
         if not self._container:
             raise RuntimeError("Sandbox has not been initialized.")
@@ -134,6 +142,13 @@ class DockerSandboxManager:
     def runScript(self, scriptPath: str, timeout_sec: int = 30) -> dict:
         """
         Executes the injected script asynchronously to prevent event loop blocking.
+        Enforces a hard kill on timeout (NFR-PERF-02).
+
+        CRITICAL LIFECYCLE WARNING:
+        If this method returns a 'TIMEOUT' status, the underlying container has been
+        forcefully killed (SIGKILL) to prevent orphaned processes. The container is
+        now dead. The caller MUST run destroySandbox() followed by createSandbox()
+        before attempting to inject or run any subsequent code.
         """
         if not self._container:
             return self._build_execution_log("FAILURE", -1, "", "Container not running", 0.0)
@@ -196,6 +211,9 @@ class DockerSandboxManager:
             return self._build_execution_log("FAILURE", -1, "", str(e), (time.time() - start_time) * 1000)
 
     def _build_execution_log(self, status: str, exit_code, stdout: str, stderr: str, duration: float) -> dict:
+        """
+        Internal formatter to standardize output into the Execution_log schema payload.
+        """
         return {
             "execution_id": str(uuid.uuid4()),
             "patch_id": None,
