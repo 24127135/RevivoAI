@@ -26,15 +26,18 @@ If you are setting this up for the first time, follow these steps to get the pip
 poetry install
 ```
 
-3. Create a .env file in the repository root with the required environment variables:
+3. Create a `.env` file in the repository root with the required environment variables.
+
+You can copy and edit a small example file named `.env.example` (not checked in here) that contains the essentials:
 
 ```bash
+# .env (example)
 GEMINI_API_KEY=your_google_gemini_api_key
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_KEY=your_supabase_anon_key
 ```
 
-If you do not need remote persistence, you can also set:
+If you do not need remote persistence for local development or CI, set:
 
 ```bash
 DISABLE_SUPABASE=true
@@ -48,7 +51,7 @@ Start the app with:
 poetry run python app.py
 ```
 
-If you want to run the backend API explicitly, you can also start it with:
+To run the backend API explicitly, you can start it with:
 
 ```bash
 poetry run python -m uvicorn backend.main:app --port 8000 --reload
@@ -68,6 +71,14 @@ RevivoAI is intentionally decoupled into a frontend layer, backend orchestration
 - Backend: FastAPI for API routing and WebSocket management
 - Database: Supabase (PostgreSQL) for session persistence and execution logging
 - Orchestrator: LangGraph for the AgentState state machine that coordinates the LLM, sandbox, and telemetry nodes
+
+### Key backend modules
+
+- `backend/main.py`: FastAPI app and route mounting
+- `backend/orchestrator.py`: LangGraph orchestration and state machine setup
+- `backend/session_handler.py`: session creation, persistence, and replay helpers
+- `backend/sandbox.py`: Docker sandbox lifecycle and execution helpers
+- `backend/llm_client.py`: LLM client wrapper and prompt helpers
 
 ### Crucial server-side mechanics
 
@@ -95,15 +106,43 @@ The AI engine defaults to a strict python_modernizer persona. The global refacto
 
 ```text
 .
-├── app.py                  # NiceGUI entry point and main UI state
-├── pyproject.toml          # Poetry dependencies and pytest settings
-├── backend/                # FastAPI, orchestration, session, and sandbox logic
-├── core/                   # Shared database helpers
-├── frontend/               # UI components, Monaco editor, and styling
-├── revivo_workspace/       # Legacy parser and type-sorting utilities
-├── sql/                    # SQL seeds and execution log references
-├── tests/                  # Pytest suite and contributor guidelines
-└── tmp/                    # Temporary workspace for local experiments
+├── .env                   # local environment overrides (not checked in)
+├── .git/                  # git metadata
+├── .gitignore
+├── .venv/                 # optional local virtualenv
+├── app.py                 # NiceGUI entry point and main UI state
+├── pyproject.toml         # Poetry dependencies and pytest settings
+├── poetry.lock
+├── README.md
+├── backend/               # FastAPI, orchestration, session, and sandbox logic
+│   ├── __init__.py
+│   ├── import_utils.py
+│   ├── llm_client.py
+│   ├── logger.py
+│   ├── logic.py
+│   ├── main.py
+│   ├── mcp_client.py
+│   ├── models.py
+│   ├── nodes.py
+│   ├── orchestrator.py
+│   ├── personas.py
+│   ├── reaper.py
+│   ├── sandbox.py
+│   ├── seed.py
+│   ├── session_handler.py
+│   └── websocket.py
+├── core/                  # Shared database helpers
+│   └── database.py
+├── frontend/              # UI components, Monaco editor, and styling
+│   ├── components.py
+│   ├── monaco_editor.py
+│   ├── monaco_editor.js
+│   └── styles.py
+├── revivo_workspace/      # Legacy parser and type-sorting utilities
+├── sql/                   # SQL seeds and execution log references
+├── tests/                 # Pytest suite
+├── test_scripts/          # helper scripts used during development
+└── tmp/                   # Temporary workspace for local experiments
 ```
 
 ### Testing

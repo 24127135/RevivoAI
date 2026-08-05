@@ -13,9 +13,23 @@ poetry run pytest
 Useful variants:
 
 ```bash
+# run all backend tests
 poetry run pytest tests/backend/
+
+# run frontend runtime tests
 poetry run pytest tests/test_frontend_runtime.py
+
+# verbose output
 poetry run pytest -v
+
+# run a single test file (quiet)
+poetry run pytest tests/backend/test_nodes.py -q
+
+# run tests matching an expression
+poetry run pytest -k "session_handler" -q
+
+# run with coverage (if available)
+poetry run pytest --cov=backend --cov-report=term-missing
 ```
 
 ## Test layout
@@ -72,6 +86,18 @@ When testing LLM patching or orchestration nodes, assert that the generated prom
 
 ## Environment notes
 
-- Set DISABLE_SUPABASE=true for local runs that should not rely on remote persistence.
+- Set `DISABLE_SUPABASE=true` for local runs that should not rely on remote persistence.
 - Avoid requiring Docker during unit tests unless the test is specifically about sandbox behavior.
 - If a dependency is not available, prefer a small stub or monkeypatch over a brittle full integration setup.
+
+Tips:
+
+- Run tests with Supabase disabled locally:
+
+```bash
+DISABLE_SUPABASE=true poetry run pytest
+```
+
+- To run Docker-dependent sandbox integration tests, ensure Docker Desktop and WSL2 (Windows) are running and invoke only those tests.
+
+- Use `tmp_path` / `tmp_path_factory` fixtures to isolate filesystem work and avoid polluting the repo.
