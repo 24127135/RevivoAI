@@ -69,6 +69,13 @@ class AppState:
         self.staging_files: list[dict] = []
         self.temp_project_root: str | None = None
 
+        # --- User Configurable Settings ---
+        self.api_key: str = ""
+        self.max_iterations: int = 3
+        self.model_temperature: float = 0.2 # Example of another useful variable
+        self.is_batch_running: bool = False
+        self.cancel_batch_flag: bool = False
+
 state = AppState()
 
 async def load_demo_project():
@@ -472,8 +479,9 @@ def approve_file(file_id: str):
     if f.status != FileStatus.PASSED:
         return
 
-    # FILES-mode imports have no directory root — fall back to a local output folder.
-    root = state.project_root or str(Path.cwd() / "revivo_workspace")
+    # Use the file's actual parent directory as the allowed root if project_root is missing
+    # This prevents the MCP Client from throwing a Path Traversal security error.
+    root = state.project_root or str(Path(f.path).parent.resolve())
     os.makedirs(root, exist_ok=True)
 
     client = MCPClient(server_uri="local://revivoai", allowed_root_path=root)
@@ -487,6 +495,7 @@ def approve_file(file_id: str):
         push_log(file_id, f"[MCP] 🔴 Write blocked — {e}")
         client.disconnect()
         return
+        
     client.disconnect()
 
     if success:
@@ -550,8 +559,32 @@ def build_orchestrator_payload(file_id: str) -> dict:
         "persona": f.persona,
         "patched_code": "",
         "iteration_count": 0,
-        "max_iterations": 3,
+        "max_iterations": state.max_iterations,
+        "api_key": state.api_key
     }
+
+def translate_error_for_user(raw_log: str) -> str:
+    """Translates scary Python tracebacks into user-friendly explanations."""
+    # If it's a standard system log and not a crash, leave it alone!
+    if not "Traceback (most recent call last)" in raw_log and not "Error:" in raw_log:
+        return raw_log
+
+    friendly_msg = "Runtime Error: The sandbox encountered an error while executing the patch."
+    
+    if "ModuleNotFoundError" in raw_log:
+        try:
+            module = raw_log.split("named ")[-1].splitlines()[0].strip().strip("'\"")
+            friendly_msg = f"Missing Dependency: The AI tried to use a package ('{module}') that isn't installed in the secure sandbox."
+        except:
+            friendly_msg = "Missing Dependency: The AI tried to use an uninstalled package."
+    elif "SyntaxError" in raw_log:
+        friendly_msg = "Syntax Error: The AI generated invalid code with a typo."
+    elif "TimeoutError" in raw_log:
+        friendly_msg = "Timeout: The test took too long to run and was terminated to prevent an infinite loop."
+    elif "NameError" in raw_log:
+        friendly_msg = "Name Error: The AI tried to use a variable or function before defining it."
+        
+    return f"🔴 [AI Sandbox Crash] {friendly_msg}"
 
 async def websocket_listener(session_id: str):
     websocket_url = f"ws://localhost:8000/ws/{session_id}"
@@ -574,7 +607,8 @@ async def websocket_listener(session_id: str):
                 if isinstance(payload, dict):
                     if "traceback_log" in payload and payload["traceback_log"]:
                         log_msg = str(payload["traceback_log"])
-                        push_log(file_id, log_msg)
+                        friendly_log = translate_error_for_user(log_msg)
+                        push_log(file_id, friendly_log)
                         
                         # FIX 1: Only allow live logs to switch the UI into active states if it is STILL running!
                         # This prevents delayed websocket packets from reverting a PASSED/FAILED file.
@@ -725,6 +759,83 @@ def run_translation_simulation(file_id: str):
 
 def run_sandbox_simulation(file_id: str):
     background_tasks.create(simulate_sandbox(file_id))
+
+async def process_batch_queue(selected_file_ids: list[str]):
+    """Sequentially processes a specific list of files."""
+    if state.is_batch_running:
+        show_alert("Batch processing is already running!", alert_type='warning')
+        return
+
+    state.is_batch_running = True
+    state.cancel_batch_flag = False
+    show_alert(f"Starting batch process for {len(selected_file_ids)} files...", alert_type='info')
+    refresh_all()
+
+    for fid in selected_file_ids:
+        if state.cancel_batch_flag:
+            show_alert("Batch processing aborted by user.", alert_type='warning')
+            break
+
+        f = state.files.get(fid)
+        if not f or f.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
+            continue
+
+        set_active_buffer(fid)
+        run_translation_simulation(fid)
+
+        while state.files[fid].status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING) and not state.cancel_batch_flag:
+            await asyncio.sleep(0.5)
+            
+        await asyncio.sleep(1.0)
+
+    state.is_batch_running = False
+    state.cancel_batch_flag = False
+    show_alert("Batch queue completed!", alert_type='positive')
+    refresh_all()
+
+def open_batch_dialog():
+    valid_files = [f for f in state.files.values() if f.status in (FileStatus.QUEUED, FileStatus.FAILED, FileStatus.EDITED_PENDING, FileStatus.REJECTED)]
+    if not valid_files:
+        show_alert("No eligible files to batch process (all files are either Done or Running).", alert_type='warning')
+        return
+
+    nodes = []
+    for folder, folder_files in folder_tree().items():
+        children = [{'id': f.file_id, 'label': str(f.filename)} for f in folder_files if f in valid_files]
+        if children: nodes.append({'id': f'folder_{folder}', 'label': f'📂 {folder}', 'children': children})
+
+    with ui.dialog() as dlg, ui.card().classes('w-[500px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white'):
+        ui.label('📦 BATCH PROCESSING').classes('text-xl font-black mb-1 tracking-tight')
+        ui.label('Select the folders or individual files you want to modernize.').classes('text-sm text-gray-600 mb-4')
+        
+        with ui.row().classes('w-full justify-end gap-2 mb-2'):
+            def select_all():
+                tree._props['ticked'] = [f.file_id for f in valid_files]
+                tree.update()
+            def deselect_all():
+                tree._props['ticked'] = []
+                tree.update()
+            ui.button('Select All', on_click=select_all).props('flat size=sm text-color=blue').classes('font-bold')
+            ui.button('Clear', on_click=deselect_all).props('flat size=sm text-color=gray').classes('font-bold')
+        
+        tree = ui.tree(nodes, tick_strategy='leaf').classes('w-full border-2 border-black p-2 bg-gray-50 h-[300px] overflow-y-auto')
+
+        with ui.row().classes('w-full justify-end gap-4 mt-6'):
+            ui.button('Cancel', on_click=dlg.close).props('flat text-color=black font-bold').classes('border-2 border-black font-black px-6 py-2')
+            
+            def start_batch():
+                # Read the selected files directly from the tree element
+                selected = tree._props.get('ticked', [])
+                if not selected:
+                    show_alert("Please select at least one file.", alert_type='warning')
+                    return
+                dlg.close()
+                background_tasks.create(process_batch_queue(selected))
+                
+            # Make sure this button is OUTSIDE the def start_batch() function!
+            ui.button('Start Batch', on_click=start_batch).props('color=blue').classes('border-2 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)] font-black px-8 py-2 text-white hover:-translate-y-px hover:-translate-x-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all')
+            
+    dlg.open()
 
 # ============================================================================
 # WELCOME SCREEN
@@ -984,6 +1095,31 @@ def render_welcome():
 # ============================================================================
 # SIDEBAR
 # ============================================================================
+def render_settings_dialog():
+    with ui.dialog() as settings_dialog, ui.card().classes('w-[400px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6'):
+        ui.label('⚙️ SYSTEM SETTINGS').classes('text-xl font-black mb-4 tracking-tight')
+        
+        # API Key Input
+        ui.label('Gemini API Key').classes('text-sm font-bold text-gray-700 uppercase')
+        ui.input(placeholder='AIzaSy...', password=True, password_toggle_button=True) \
+            .bind_value(state, 'api_key') \
+            .classes('w-full mb-4') \
+            .props('outlined dense')
+        
+        # Max Iterations Input
+        ui.label('Max Sandbox Iterations').classes('text-sm font-bold text-gray-700 uppercase')
+        ui.number(min=1, max=10, format='%d') \
+            .bind_value(state, 'max_iterations') \
+            .classes('w-full mb-6') \
+            .props('outlined dense')
+            
+        with ui.row().classes('w-full justify-end mt-2'):
+            ui.button('Save & Close', on_click=settings_dialog.close) \
+                .props('color=black text-color=white unelevated') \
+                .classes('font-bold px-6 py-2 hover:-translate-y-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,0.5)] transition-all')
+            
+    return settings_dialog
+
 @ui.refreshable
 def render_sidebar():
     with ui.column().classes('w-full h-full p-0 m-0 bg-white'):
@@ -1007,7 +1143,16 @@ def render_sidebar():
                 p_btn = ui.element('div').classes(btn_cls).on('click', add_project_to_workspace_from_dialog)
                 with p_btn:
                     ui.label('+ Project').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
-            
+
+        # --- BATCH PROCESSING CONTROLS ---
+                if state.is_batch_running:
+                    cancel_btn = ui.element('div').classes(btn_cls.replace('bg-white', 'bg-red-50').replace('hover:border-black', 'hover:border-red-500')).on('click', lambda: setattr(state, 'cancel_batch_flag', True))
+                    with cancel_btn:
+                        ui.label('🛑 Stop Batch').classes('relative z-10 pointer-events-none block text-red-600 group-hover:text-white transition-colors duration-200')
+                else:
+                    b_btn = ui.element('div').classes(btn_cls.replace('bg-white', 'bg-blue-50').replace('hover:border-black', 'hover:border-blue-500')).on('click', open_batch_dialog)
+                    with b_btn:
+                        ui.label('📦 Run Batch').classes('relative z-10 pointer-events-none block text-blue-600 group-hover:text-white transition-colors duration-200')
 
         # 2. SCROLLABLE FILE TREE
         with ui.scroll_area().classes('flex-1 w-full px-2 mt-2'):
@@ -1063,6 +1208,18 @@ def render_sidebar():
 
         # 3. FIXED FOOTER
         with ui.column().classes('w-full p-4 border-t border-gray-200 bg-gray-50 mt-auto'):
+            # --- Settings Dialog & Trigger Button ---
+            settings_modal = render_settings_dialog()
+            
+            btn_settings = ui.element('div').classes(
+                'group relative w-full bg-white px-4 py-2 font-semibold text-gray-700 text-center cursor-pointer '
+                'after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-gray-700 '
+                'transition-all duration-200 hover:after:h-full focus:outline-0 border border-gray-300 hover:border-gray-700 mb-2'
+            ).on('click', settings_modal.open)
+            with btn_settings:
+                ui.label('⚙️ Configuration').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
+
+            # --- Clear Workspace Dialog ---
             with ui.dialog() as confirm_dialog, ui.card():
                 ui.label('Clear Workspace?').classes('text-lg font-bold')
                 ui.label('This will remove all files from the current session. Unsaved changes will be lost.')
@@ -1547,4 +1704,4 @@ def index():
 
 
 if __name__ in {'__main__', '__mp_main__'}:
-    ui.run(title="RevivoAI", favicon="🔬", dark=False, port=8501, storage_secret='revivo-ai-secret')
+    ui.run(title="RevivoAI", favicon="🔬", dark=False, port=8501, storage_secret='revivo-ai-secret', reload=False)

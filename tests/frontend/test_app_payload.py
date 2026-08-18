@@ -42,6 +42,7 @@ def test_build_orchestrator_payload_includes_workspace_and_file_context(tmp_path
             "patched_code": "",
             "iteration_count": 0,
             "max_iterations": 3,
+            "api_key": "",
         }
     finally:
         app_module.state.files = original_files

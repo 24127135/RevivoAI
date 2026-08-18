@@ -118,13 +118,16 @@ async def test_websocket_listener_updates_ui_state_from_backend_payload(monkeypa
         app_module.state.active_buffer = project_file.file_id
         app_module.state.execution_logs.clear()
         app_module.state.agent_state.clear()
+        app_module.state.is_thinking = True
 
         payload = json.dumps(
             {
                 "target_file": {"file_id": project_file.file_id, "path": str(source_file)},
                 "current_node": "sandbox_node",
                 "docker_exit_code": 1,
-                "traceback_log": "Traceback: boom",
+                "iteration_count": 3,
+                "max_iterations": 3,
+                "traceback_log": "[Sandbox] Provisioning\nTraceback: boom",
                 "patched_code": "print('patched')",
             }
         )
@@ -136,7 +139,7 @@ async def test_websocket_listener_updates_ui_state_from_backend_payload(monkeypa
 
         await app_module.websocket_listener("session-1")
 
-        assert app_module.state.agent_state[project_file.file_id] == "sandbox_node"
+        assert app_module.state.agent_state[project_file.file_id] == "Done"
         assert app_module.state.files[project_file.file_id].status == FileStatus.FAILED
         assert app_module.state.files[project_file.file_id].ai_source == "print('patched')"
         assert any("Traceback: boom" in log for log in app_module.state.execution_logs[project_file.file_id])
