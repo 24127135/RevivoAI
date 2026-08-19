@@ -1,6 +1,7 @@
 import asyncio
 import json
 import html
+import logging
 import os
 import time
 import uuid
@@ -13,20 +14,45 @@ import httpx
 import websockets
 from nicegui import ui, app, events, background_tasks
 
+logger = logging.getLogger(__name__)
+
 # Import from backend
 from backend.mcp_client import MCPClient
 from backend.models import FileStatus, STATUS_META, WARNING_STATUSES, ProjectFile
 from backend.logic import (
     parse_traceback, compute_anchors, group_frames_for_disclosure,
 )
-from backend.seed import build_seed_files
 from backend.import_utils import import_from_uploads, import_local_project
 from backend.session_handler import SessionHandler
 
 # Import from frontend
 from frontend.styles import get_css
-from frontend.components import TRANSLATING_PHASES, SANDBOX_PHASES
+from frontend.components import TRANSLATING_PHASES, SANDBOX_PHASES, LazyFileTree, StructuredTerminal
 from frontend.monaco_editor import MonacoEditor
+
+# ============================================================================
+# STRUCTURED LOG DATA WRAPPER
+# ============================================================================
+class StructuredLog(dict):
+    """Structured log dictionary that also supports substring searching for string compatibility in tests."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __contains__(self, item):
+        if super().__contains__(item):
+            return True
+        if isinstance(item, str):
+            msg = str(self.get("message", ""))
+            raw = str(self.get("details", {}).get("raw_output", ""))
+            formatted = f"[{self.get('timestamp')}] [{self.get('source')}] {msg} {raw}"
+            return item in formatted or item in msg or item in raw
+        return False
+
+    def __str__(self):
+        msg = str(self.get("message", ""))
+        raw = str(self.get("details", {}).get("raw_output", ""))
+        return f"[{self.get('timestamp', '')}] [{self.get('source', '')}] {msg} {raw}".strip()
+
 
 # ============================================================================
 # STATE INIT
@@ -59,7 +85,11 @@ class AppState:
         self.is_thinking: bool = False
         self.thinking_phase: int = 0  # <--- ADD THIS FIX
         self.agent_state: dict[str, str] = {}         
-        self.execution_logs: dict[str, list[str]] = {} 
+        # Ring buffer for initial mount only — NOT synced via NiceGUI reactive state.
+        # Logs are pushed directly to Vue component via run_method (delta push).
+        # Max 1000 entries per file to cap memory.
+        self.execution_logs: dict[str, list[StructuredLog]] = {}
+        self._MAX_LOG_BUFFER = 1000
         self.current_terminal = None
         self.fullscreen_mode: str | None = None  # None, 'diff', 'source', 'edit_legacy', 'edit_ai'
 
@@ -74,40 +104,53 @@ class AppState:
         self.max_iterations: int = 3
         self.model_temperature: float = 0.2 # Example of another useful variable
         self.is_batch_running: bool = False
+        self.is_batch_paused: bool = False
         self.cancel_batch_flag: bool = False
+        self.batch_queue: list[str] = []
+        self.batch_current_idx: int = 0
+        self.user_feedback: dict[str, str] = {}
 
 state = AppState()
 
 async def load_demo_project():
-    """Populates the staging screen with seed files so the user can review before proceeding."""
-    files = build_seed_files()
+    """Loads real test scripts from test_scripts directory directly into the workspace."""
+    candidate_paths = [
+        Path.cwd() / "test_scripts",
+        Path(__file__).resolve().parent / "test_scripts",
+        Path.cwd() / "test_scritps",
+        Path(__file__).resolve().parent / "test_scritps",
+    ]
+    project_root = next((p for p in candidate_paths if p.exists() and p.is_dir()), None)
+    
+    if not project_root:
+        show_alert("Test scripts folder not found.", alert_type='warning')
+        return
+
+    try:
+        imported_files = import_local_project(str(project_root))
+    except Exception as e:
+        show_alert(f"Failed to scan test scripts: {e}", alert_type='negative')
+        return
+
+    if not imported_files:
+        show_alert("No test script files found in test_scripts directory.", alert_type='warning')
+        return
+
     state.staging_files = []
-    for i, f in enumerate(files):
+    state.temp_project_root = str(project_root.resolve())
+
+    for f in imported_files:
         size_bytes = len(f.legacy_source.encode('utf-8'))
-        if size_bytes >= 1024:
-            size_str = f'{size_bytes / 1024:.1f} KB'
-        else:
-            size_str = f'{size_bytes} B'
-        # Make one file "failed" so user can see the retry button
-        if i == 3:
-            entry_status = 'failed'
-            entry_pct = 62
-        # Make one file "uploading" so user can see the progress bar mid-way
-        elif i == 7:
-            entry_status = 'uploading'
-            entry_pct = 45
-        else:
-            entry_status = 'done'
-            entry_pct = 100
+        size_str = f'{size_bytes / 1024:.1f} KB' if size_bytes >= 1024 else f'{size_bytes} B'
         state.staging_files.append({
             'name': f.path,
             'size_str': size_str,
-            'pct': entry_pct,
-            'status': entry_status,
+            'pct': 100,
+            'status': 'done',
             'project_file': f,
         })
-    state.import_mode = "STAGING"
-    refresh_all()
+
+    await commit_staging_to_workspace()
 
 async def commit_staging_to_workspace():
     """User clicked Proceed — move staging files into the workspace."""
@@ -130,12 +173,22 @@ async def commit_staging_to_workspace():
     
     state.staging_files = []
     state.import_mode = None
-    state.session_handler = SessionHandler()
-    session_id = await state.session_handler.initialize_session(user_id=str(uuid.uuid4()))
-    state.session_id = session_id
-    if session_id:
-        background_tasks.create(websocket_listener(session_id))
+    state.is_batch_running = False
+    state.cancel_batch_flag = False
+    state.is_thinking = False
+    try:
+        state.session_handler = SessionHandler()
+        session_id = await state.session_handler.initialize_session(user_id=str(uuid.uuid4()))
+        state.session_id = session_id
+        if session_id:
+            background_tasks.create(websocket_listener(session_id))
+    except Exception as e:
+        logger.warning(f"Could not initialize remote session: {e}")
     refresh_all()
+    try:
+        render_sidebar.refresh()
+    except Exception:
+        pass
 
 async def pick_directory_async():
     def pick():
@@ -180,6 +233,10 @@ async def handle_native_import_project():
                 show_alert("No readable source files found in that directory.", alert_type='warning')
         except Exception as e:
             show_alert(f"Failed to import project: {e}", alert_type='negative')
+    try:
+        render_sidebar.refresh()
+    except Exception:
+        pass
 
 async def open_file_picker():
     def pick():
@@ -267,11 +324,9 @@ def show_alert(message: str, alert_type: str = 'info'):
     """
     try:
         ui.notify(html_content, html=True, position='top-right', close_button=False)
-    except RuntimeError:
-        # The UI element was destroyed before the notification could render.
-        # This is safe to ignore.
+    except Exception:
+        # Safe fallback when invoked from background tasks without slot context
         pass
-    ui.notify(html_content, html=True, position='top-right', close_button=False)
 
 
 def get_staging_summary_counts() -> dict[str, int]:
@@ -286,6 +341,40 @@ def get_staging_summary_counts() -> dict[str, int]:
         elif status == "uploading":
             counts["uploading"] += 1
     return counts
+
+
+def _canonical_fs_path(path: str | None, root_path: str | None = None) -> str:
+    if not path:
+        return ""
+    candidate = Path(str(path).replace("\\", "/"))
+    if candidate.is_absolute():
+        return candidate.resolve().as_posix()
+    if root_path:
+        return (Path(root_path) / candidate).resolve().as_posix()
+    return candidate.as_posix()
+
+
+def _find_file_id_by_tree_key(tree_key: str | None) -> str | None:
+    if not tree_key:
+        return None
+    if tree_key in state.files:
+        return tree_key
+
+    clean_tree_key = str(tree_key).replace("\\", "/").rstrip("/")
+    canonical_key = _canonical_fs_path(tree_key, state.project_root)
+
+    for file_id, project_file in state.files.items():
+        if file_id == tree_key:
+            return file_id
+        pf_path = str(getattr(project_file, "path", "")).replace("\\", "/").rstrip("/")
+        if not pf_path:
+            continue
+        if pf_path == clean_tree_key or clean_tree_key.endswith("/" + pf_path) or pf_path.endswith("/" + clean_tree_key):
+            return file_id
+        file_key = _canonical_fs_path(pf_path, state.project_root)
+        if file_key and (file_key == canonical_key or file_key == clean_tree_key):
+            return file_id
+    return None
 
 
 def merge_project_files_into_workspace(imported_files: list[ProjectFile], source_root: str | None = None) -> dict[str, int]:
@@ -308,6 +397,10 @@ def merge_project_files_into_workspace(imported_files: list[ProjectFile], source
         if not state.active_buffer and state.files:
             state.active_buffer = added_files[0].file_id
         refresh_all()
+        try:
+            render_sidebar.refresh()
+        except Exception:
+            pass
 
     return {"added": len(added_files), "skipped": skipped}
 
@@ -402,16 +495,89 @@ async def add_project_to_workspace_from_dialog():
         show_alert('All selected files were already present in the workspace.', alert_type='warning')
 
 
-def push_log(file_id: str, message: str):
-    if file_id not in state.execution_logs:
-        state.execution_logs[file_id] = []
+def _make_structured_log(
+    message_or_entry: Union[str, dict[str, Any]],
+    source: str = "SYSTEM",
+    status: str = "info",
+    details: Optional[dict] = None,
+) -> StructuredLog:
+    """Normalize a raw string or dict into a StructuredLog."""
+    if isinstance(message_or_entry, dict):
+        raw_msg = str(message_or_entry.get("message", ""))
+        entry_source = str(message_or_entry.get("source", source)).upper()
+        entry_status = str(message_or_entry.get("status", status)).lower()
+        entry_ts = str(message_or_entry.get("timestamp", time.strftime('%H:%M:%S')))
+        entry_details = dict(message_or_entry.get("details", details or {}))
+        return StructuredLog(
+            timestamp=entry_ts,
+            source=entry_source,
+            status=entry_status,
+            message=raw_msg,
+            details=entry_details,
+        )
+
+    raw_str = str(message_or_entry)
     timestamp = time.strftime('%H:%M:%S')
-    log_line = f"[{timestamp}] {message}"
-    state.execution_logs[file_id].append(log_line)
+    parsed_source = source.upper()
+    parsed_status = status.lower()
+
+    # Auto-detect source prefix if present in legacy string format
+    if raw_str.startswith("[LLM"):
+        parsed_source = "LLM"
+    elif raw_str.startswith("[Sandbox") or raw_str.startswith("[Docker") or "[AI Sandbox Crash]" in raw_str:
+        parsed_source = "DOCKER"
+    elif raw_str.startswith("[Pytest") or "Pytest" in raw_str:
+        parsed_source = "PYTEST"
+    elif raw_str.startswith("[Telemetry") or "Supabase" in raw_str:
+        parsed_source = "TELEMETRY"
+    elif raw_str.startswith("[User Action") or raw_str.startswith("[MCP") or raw_str.startswith("[System"):
+        parsed_source = "SYSTEM"
+
+    if "Error" in raw_str or "failed" in raw_str or "🔴" in raw_str or "Crash" in raw_str or "Exception" in raw_str:
+        parsed_status = "error"
+    elif "warning" in raw_str.lower() or "Refused" in raw_str:
+        parsed_status = "warning"
+    elif "successful" in raw_str or "passed" in raw_str or "🟢" in raw_str:
+        parsed_status = "success"
+    elif "Executing" in raw_str or "Analyzing" in raw_str or "Provisioning" in raw_str or "Starting" in raw_str:
+        parsed_status = "running"
+
+    return StructuredLog(
+        timestamp=timestamp,
+        source=parsed_source,
+        status=parsed_status,
+        message=raw_str,
+        details=details or {},
+    )
+
+
+def push_log(
+    file_id: str,
+    message_or_entry: Union[str, dict[str, Any]],
+    source: str = "SYSTEM",
+    status: str = "info",
+    details: Optional[dict] = None
+):
+    """Push a structured log delta directly to the Vue StructuredTerminal component.
     
+    Architecture note: Logs are NOT stored in NiceGUI's reactive state to avoid
+    serializing the full log array on every state update. Instead:
+    - The log is pushed directly to the Vue component via run_method() (delta only).
+    - A lightweight ring buffer in state.execution_logs (max 1000) is maintained
+      only for re-mounting the terminal when the user navigates between files.
+    """
+    log_entry = _make_structured_log(message_or_entry, source, status, details)
+
+    # --- Ring buffer (for initial mount when terminal is re-rendered) ---
+    buf = state.execution_logs.setdefault(file_id, [])
+    buf.append(log_entry)
+    if len(buf) > state._MAX_LOG_BUFFER:
+        buf.pop(0)  # Drop oldest to keep memory bounded
+
+    # --- Delta push directly to Vue component (no state serialization overhead) ---
     if state.active_buffer == file_id and state.current_terminal:
         try:
-            state.current_terminal.push(log_line)
+            state.current_terminal.push(log_entry)
         except Exception:
             pass
 
@@ -429,10 +595,147 @@ def folder_tree() -> dict[str, list[ProjectFile]]:
 def folder_has_warning(folder_files: list[ProjectFile]) -> int: 
     return sum(1 for f in folder_files if f.status in WARNING_STATUSES)
 
+def build_hierarchical_file_tree(
+    files: dict[str, ProjectFile],
+    search_query: str = "",
+    status_filter: str = "All",
+    module_filter: str = "All"
+) -> tuple[list[dict], list[str]]:
+    """
+    Builds a full N-level hierarchical tree structure from workspace files.
+    Returns (tree_nodes, default_expanded_folder_ids).
+    """
+    filtered: list[ProjectFile] = []
+    for f in files.values():
+        fname = str(f.filename).lower() if f.filename else ""
+        if search_query and search_query.lower() not in fname:
+            continue
+        status_val = getattr(f.status, 'value', str(f.status))
+        if status_filter != "All" and status_val != status_filter:
+            continue
+        folder_name = str(f.folder) if f.folder else "Root"
+        if module_filter != "All" and folder_name != module_filter:
+            continue
+        filtered.append(f)
+
+    root_path = Path(state.project_root).resolve() if state.project_root else None
+    root_label = root_path.name if root_path else "Root"
+
+    def _relative_path(path: str | None) -> str:
+        if not path:
+            return ""
+        candidate = Path(str(path).replace("\\", "/"))
+        if root_path:
+            try:
+                if candidate.is_absolute():
+                    return candidate.resolve().relative_to(root_path).as_posix()
+            except ValueError:
+                pass
+        return candidate.as_posix().strip("/")
+
+    def _absolute_key(path: str | None) -> str:
+        if not path:
+            return ""
+        candidate = Path(str(path).replace("\\", "/"))
+        if root_path and not candidate.is_absolute():
+            candidate = root_path / candidate
+        return candidate.resolve().as_posix()
+
+    root_dict: dict = {}
+    for f in filtered:
+        clean_path = _relative_path(f.path).strip("/")
+        parts = clean_path.split("/")
+        curr = root_dict
+        for part in parts[:-1]:
+            if part not in curr:
+                curr[part] = {"__type": "folder", "__children": {}}
+            curr = curr[part]["__children"]
+        
+        file_part = parts[-1] if parts else f.filename
+        curr[file_part] = {"__type": "file", "__file": f}
+
+    expanded_folders: list[str] = []
+
+    def _collect_files(node_dict: dict) -> list[ProjectFile]:
+        collected = []
+        for v in node_dict.values():
+            if v.get("__type") == "file":
+                collected.append(v["__file"])
+            elif v.get("__type") == "folder":
+                collected.extend(_collect_files(v["__children"]))
+        return collected
+
+    def convert(node_dict: dict, current_path: str = "") -> list[dict]:
+        res = []
+        folders = [k for k, v in node_dict.items() if v.get("__type") == "folder"]
+        files_in_dir = [k for k, v in node_dict.items() if v.get("__type") == "file"]
+
+        folders.sort(key=str.lower)
+        files_in_dir.sort(key=str.lower)
+
+        for folder_name in folders:
+            sub_path = f"{current_path}/{folder_name}".lstrip("/")
+            sub_dict = node_dict[folder_name]["__children"]
+            sub_children = convert(sub_dict, sub_path)
+            
+            sub_files = _collect_files(sub_dict)
+            warn_count = sum(1 for sf in sub_files if sf.status in WARNING_STATUSES)
+            folder_key = _absolute_key(sub_path)
+            expanded_folders.append(folder_key)
+
+            res.append({
+                "id": folder_key,
+                "label": folder_name,
+                "path": folder_key,
+                "is_dir": True,
+                "badge": f"⚠️ {warn_count}" if warn_count else None,
+                "children": sub_children,
+            })
+
+        for file_name in files_in_dir:
+            pf: ProjectFile = node_dict[file_name]["__file"]
+            has_warn = pf.status in WARNING_STATUSES
+            
+            status_badge = None
+            if pf.status in (FileStatus.PASSED, FileStatus.APPROVED):
+                status_badge = "✓"
+            elif pf.status in (FileStatus.FAILED, FileStatus.REJECTED):
+                status_badge = "!"
+            elif pf.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
+                status_badge = "⚡"
+            elif pf.status == FileStatus.EDITED_PENDING:
+                status_badge = "✎"
+
+            res.append({
+                "id": _absolute_key(pf.path),
+                "file_id": pf.file_id,
+                "label": pf.filename,
+                "path": _absolute_key(pf.path),
+                "is_dir": False,
+                "has_warning": has_warn,
+                "status": getattr(pf.status, 'value', str(pf.status)),
+                "status_badge": status_badge,
+                "ext": str(pf.filename).split(".")[-1].lower() if "." in str(pf.filename) else "",
+            })
+        return res
+
+    tree_nodes = [{
+        "id": _absolute_key(state.project_root),
+        "label": root_label,
+        "path": _absolute_key(state.project_root),
+        "is_dir": True,
+        "children": convert(root_dict),
+    }]
+    expanded_folders.insert(0, _absolute_key(state.project_root))
+    return tree_nodes, expanded_folders
+
 def set_active_buffer(file_id: str): 
     state.active_buffer = file_id
     state.fullscreen_mode = None
-    refresh_all()
+    try:
+        render_main.refresh()
+    except Exception:
+        pass
 
 def transition_to_sandbox(file_id: str):
     f = get_file(file_id)
@@ -511,6 +814,62 @@ def reject_file(file_id: str, note: str):
     f.status, f.rejection_note, state.rejecting[file_id] = FileStatus.REJECTED, note, False
     push_log(file_id, f"[User Action] 🔴 Patch rejected. Note: {note}")
 
+def open_reject_dialog(file_id: str):
+    f = get_file(file_id)
+    if not f:
+        return
+    with ui.dialog() as reject_dialog, ui.card().classes('w-[440px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white'):
+        ui.label("Reject Patch").classes('text-xl font-black mb-1 tracking-tight')
+        ui.label("Provide a reason for rejecting this AI patch:").classes('text-sm text-gray-600 mb-3')
+        note_input = ui.textarea(value=f.rejection_note or "", placeholder="Enter reason for rejection...").classes('w-full mb-4 font-mono text-sm').props('rows=4 autofocus borderless')
+        with ui.row().classes('w-full justify-end gap-3'):
+            ui.button("Cancel", on_click=reject_dialog.close).props('flat text-color=black').classes('border-2 border-black font-black px-4 py-1')
+            def do_reject():
+                reject_file(file_id, note_input.value or "")
+                reject_dialog.close()
+                refresh_all()
+            ui.button("Confirm Reject", on_click=do_reject).props('color=negative').classes('border-2 border-black font-black px-6 py-1 text-white shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]')
+    reject_dialog.open()
+
+def open_retest_dialog(file_id: str):
+    f = get_file(file_id)
+    if not f:
+        return
+
+    with ui.dialog() as retest_dialog, ui.card().classes('w-[90vw] max-w-[540px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white flex flex-col gap-4'):
+        with ui.row().classes('w-full justify-between items-start mb-0'):
+            with ui.column().classes('gap-0.5'):
+                ui.label("Re-test with Feedback").classes('text-xl font-black tracking-tight text-black')
+                ui.label(f"Target File: {f.filename}").classes('text-xs font-mono font-bold text-gray-500 truncate max-w-[420px]')
+            ui.button(icon='close', on_click=retest_dialog.close).props('flat round dense size=sm text-color=black')
+
+        ui.label("Provide optional instructions or feedback for the AI agent before re-testing:").classes('text-xs text-gray-700 font-sans')
+        
+        existing_fb = state.user_feedback.get(file_id, "")
+        feedback_input = ui.textarea(
+            value=existing_fb,
+            placeholder='e.g., Fix the off-by-one error in binary search, preserve existing exception handlers...'
+        ).props('rows=4 autofocus borderless').classes('w-full font-mono text-sm')
+
+        with ui.row().classes('w-full justify-end items-center gap-3 pt-2'):
+            ui.button("Cancel", on_click=retest_dialog.close).props('flat text-color=black size=sm').classes('border-2 border-black font-bold text-xs px-4 py-1.5 shadow-[2px_2px_0_0_rgba(0,0,0,1)]')
+            
+            def do_confirm_retest():
+                fb_text = (feedback_input.value or "").strip()
+                state.user_feedback[file_id] = fb_text
+                retest_dialog.close()
+                if fb_text:
+                    push_log(file_id, f"[User Feedback] Developer note: {fb_text}")
+                else:
+                    push_log(file_id, "[User Action] Retrying AI translation...")
+                run_translation_simulation(file_id)
+
+            ui.button("Confirm Re-test", icon='replay', on_click=do_confirm_retest) \
+                .props('color=primary text-color=white size=sm') \
+                .classes('border-2 border-black font-black text-xs px-5 py-1.5 shadow-[2px_2px_0_0_rgba(0,0,0,1)] text-white')
+
+    retest_dialog.open()
+
 def start_edit(file_id: str): 
     state.diff_state[file_id] = "editing"
     
@@ -531,16 +890,20 @@ def refresh_all():
     try:
         if getattr(state, 'drawer', None) is not None:
             if state.files and not state.import_mode:
-                state.drawer.set_visibility(True)
-                state.drawer.show()  # <-- Forces the layout to expand
+                state.drawer.value = True
+                state.drawer.show()
             else:
-                state.drawer.set_visibility(False)
-                state.drawer.hide()  # <-- Reclaims the sidebar space
+                state.drawer.value = False
+                state.drawer.hide()
     except Exception:
         pass
 
     try:
         render_sidebar.refresh()
+    except Exception:
+        pass
+
+    try:
         render_main.refresh()
     except Exception:
         pass
@@ -550,16 +913,20 @@ def build_orchestrator_payload(file_id: str) -> dict:
     import dataclasses
     f_dict = dataclasses.asdict(f)
     f_dict['status'] = f.status.value if hasattr(f.status, 'value') else f.status
+    
+    feedback = state.user_feedback.get(file_id, "").strip()
+    system_prompt = f"USER FEEDBACK / INSTRUCTIONS FOR PATCH REFACTORING:\n{feedback}\n" if feedback else ""
+
     return {
         "session_id": state.session_id,
         "target_file": f_dict,
         "file_path": f.path,
         "workspace_dir": state.project_root,
-        "system_prompt": "",
+        "system_prompt": system_prompt,
         "persona": f.persona,
         "patched_code": "",
         "iteration_count": 0,
-        "max_iterations": state.max_iterations,
+        "max_iterations": int(state.max_iterations) if state.max_iterations is not None else 3,
         "api_key": state.api_key
     }
 
@@ -586,6 +953,16 @@ def translate_error_for_user(raw_log: str) -> str:
         
     return f"🔴 [AI Sandbox Crash] {friendly_msg}"
 
+async def ensure_session_initialized() -> str | None:
+    if not state.session_id:
+        if not state.session_handler:
+            state.session_handler = SessionHandler()
+        session_id = await state.session_handler.initialize_session(user_id=str(uuid.uuid4()))
+        state.session_id = session_id
+        if session_id:
+            background_tasks.create(websocket_listener(session_id))
+    return state.session_id
+
 async def websocket_listener(session_id: str):
     websocket_url = f"ws://localhost:8000/ws/{session_id}"
     try:
@@ -601,65 +978,109 @@ async def websocket_listener(session_id: str):
                 if not file_id:
                     file_id = state.active_buffer
 
-                if not file_id:
+                if not file_id or file_id not in state.files:
                     continue
 
+                prev_status = state.files[file_id].status
+                prev_phase = state.thinking_phase
+                prev_thinking = state.is_thinking
+                prev_agent_state = state.agent_state.get(file_id)
+
                 if isinstance(payload, dict):
-                    if "traceback_log" in payload and payload["traceback_log"]:
+                    log_entry = payload.get("log_entry")
+                    if log_entry and isinstance(log_entry, dict):
+                        entry = dict(log_entry)
+                        entry["message"] = translate_error_for_user(entry.get("message", ""))
+                        push_log(file_id, entry)
+                    elif "traceback_log" in payload and payload["traceback_log"]:
                         log_msg = str(payload["traceback_log"])
                         friendly_log = translate_error_for_user(log_msg)
                         push_log(file_id, friendly_log)
                         
-                        # FIX 1: Only allow live logs to switch the UI into active states if it is STILL running!
-                        # This prevents delayed websocket packets from reverting a PASSED/FAILED file.
-                        if state.is_thinking:
-                            if "[LLM Engine] Prompting AI" in log_msg: 
+                    raw_log_msg = str(payload.get("traceback_log", "")) + " " + str(payload.get("log_entry", {}).get("message", ""))
+                    src = str(payload.get("log_entry", {}).get("source", "")).upper()
+                    node_key = str(payload.get("current_node", "")).lstrip("_")
+
+                    if node_key:
+                        state.agent_state[file_id] = node_key
+
+                    # Map incoming states and logs to active UI phases
+                    if state.is_thinking:
+                        if src == "LLM" or node_key == "llm_patch_node" or "Prompting" in raw_log_msg or "Analyzing" in raw_log_msg or "Patch" in raw_log_msg:
+                            state.files[file_id].status = FileStatus.TRANSLATING
+                            state.agent_state[file_id] = "llm_patch_node"
+                            if "Prompting" in raw_log_msg or "Generating" in raw_log_msg:
                                 state.thinking_phase = 0
-                                state.files[file_id].status = FileStatus.TRANSLATING
-                                state.agent_state[file_id] = "llm_patch_node"
-                            elif "[LLM Engine] Analyzing" in log_msg: 
+                            elif "Analyzing" in raw_log_msg:
                                 state.thinking_phase = 1
-                            elif "Response received" in log_msg: 
+                            elif "Patch received" in raw_log_msg or "Response" in raw_log_msg or "Parsing" in raw_log_msg:
                                 state.thinking_phase = 2
-                            elif "[Sandbox] Provisioning" in log_msg: 
+
+                        elif src in ("DKR", "TEST", "DOCKER", "PYTEST") or node_key in ("sandbox_node", "telemetry_node") or "Provisioning" in raw_log_msg or "Injecting" in raw_log_msg or "Executing" in raw_log_msg or "container" in raw_log_msg:
+                            state.files[file_id].status = FileStatus.SANDBOX_TESTING
+                            state.agent_state[file_id] = "sandbox_node"
+                            if "Provisioning" in raw_log_msg:
                                 state.thinking_phase = 0
-                                state.files[file_id].status = FileStatus.SANDBOX_TESTING
-                                state.agent_state[file_id] = "sandbox_node"
-                            elif "[Sandbox] Injecting" in log_msg: 
+                            elif "Injecting" in raw_log_msg:
                                 state.thinking_phase = 1
-                            elif "[Sandbox] Executing" in log_msg: 
+                            elif "Executing" in raw_log_msg or "Test run" in raw_log_msg or "tests" in raw_log_msg:
                                 state.thinking_phase = 2
-                    
+
                     if "patched_code" in payload and payload["patched_code"]:
                         state.files[file_id].ai_source = payload["patched_code"]
 
-                    # FIX 2: Catch terminal states directly from the websocket!
-                    # By verifying current_node == "sandbox_node", we ignore stale exit_codes from earlier iterations.
-                    if payload.get("current_node") == "sandbox_node" and "docker_exit_code" in payload:
-                        exit_code = payload["docker_exit_code"]
-                        iteration = payload.get("iteration_count", 1)
-                        max_iters = payload.get("max_iterations", 3)
-                        
-                        if exit_code == 0:
+                    # Terminal state resolution from websocket exit_code or log completion
+                    if "docker_exit_code" in payload or node_key in ("sandbox_node", "telemetry_node"):
+                        exit_code = payload.get("docker_exit_code")
+                        try:
+                            iteration = int(payload.get("iteration_count", 1) or 1)
+                        except (ValueError, TypeError):
+                            iteration = 1
+                        try:
+                            max_iters = int(payload.get("max_iterations", 3) or 3)
+                        except (ValueError, TypeError):
+                            max_iters = 3
+
+                        if exit_code == 0 or "All tests passed" in raw_log_msg:
                             state.files[file_id].status = FileStatus.PASSED
                             state.is_thinking = False
                             state.agent_state[file_id] = "Done"
-                        elif iteration >= max_iters:
-                            state.files[file_id].status = FileStatus.FAILED
-                            state.is_thinking = False
-                            state.agent_state[file_id] = "Done"
-                            state.files[file_id].raw_traceback = str(payload.get("traceback_log", ""))
-                        else:
-                            # It is still looping. Capture the traceback but keep thinking!
-                            state.files[file_id].raw_traceback = str(payload.get("traceback_log", ""))
+                        elif exit_code is not None and exit_code != 0:
+                            if iteration >= max_iters or "Max iterations reached" in raw_log_msg:
+                                state.files[file_id].status = FileStatus.FAILED
+                                state.is_thinking = False
+                                state.agent_state[file_id] = "Done"
+                                state.files[file_id].raw_traceback = str(payload.get("traceback_log", "")) or str(payload.get("log_entry", {}).get("details", {}).get("raw_output", ""))
+                            else:
+                                state.files[file_id].raw_traceback = str(payload.get("traceback_log", "")) or str(payload.get("log_entry", {}).get("details", {}).get("raw_output", ""))
 
-                render_sidebar.refresh()
-                render_main.refresh()
+                new_status = state.files[file_id].status
+                new_phase = state.thinking_phase
+                new_thinking = state.is_thinking
+                new_agent_state = state.agent_state.get(file_id)
+
+                status_changed = (new_status != prev_status)
+                phase_changed = (new_phase != prev_phase)
+                thinking_changed = (new_thinking != prev_thinking)
+                agent_state_changed = (new_agent_state != prev_agent_state)
+
+                if status_changed:
+                    try:
+                        render_sidebar.refresh()
+                    except Exception:
+                        pass
+
+                if status_changed or phase_changed or thinking_changed or agent_state_changed:
+                    try:
+                        render_main.refresh()
+                    except Exception:
+                        pass
     except Exception as exc:
         if session_id:
             push_log(state.active_buffer or "", f"[WebSocket] Listener stopped for session {session_id}: {exc}")
 
 async def _trigger_backend_run(file_id: str):
+    await ensure_session_initialized()
     if not state.session_id:
         raise RuntimeError("Session has not been initialized.")
 
@@ -737,17 +1158,21 @@ def run_translation_simulation(file_id: str):
     state.files[file_id].status = FileStatus.TRANSLATING
 
     try:
-        refresh_all()
+        render_sidebar.refresh()
+        render_main.refresh()
     except Exception:
         pass
 
-    if not state.session_id:
-        state.agent_state[file_id] = "Starting"
-        show_alert("Translation started locally; backend session is not ready yet.", alert_type='warning')
-        return
+    async def _runner():
+        await ensure_session_initialized()
+        if not state.session_id:
+            state.agent_state[file_id] = "Starting"
+            show_alert("Translation started locally; backend session is not ready yet.", alert_type='warning')
+            return
+        await simulate_translation(file_id)
 
     try:
-        background_tasks.create(simulate_translation(file_id))
+        background_tasks.create(_runner())
     except Exception:
         try:
             loop = asyncio.get_running_loop()
@@ -755,84 +1180,164 @@ def run_translation_simulation(file_id: str):
             loop = None
 
         if loop is not None:
-            loop.create_task(simulate_translation(file_id))
+            loop.create_task(_runner())
 
 def run_sandbox_simulation(file_id: str):
     background_tasks.create(simulate_sandbox(file_id))
 
+def pause_batch():
+    state.is_batch_paused = True
+    push_log(state.active_buffer, "[Batch] Batch processing paused. You can now review, edit, or re-test files.")
+    show_alert("Batch paused. You can now edit/re-test files, then click Resume.", alert_type='warning')
+    refresh_all()
+
+def resume_batch():
+    state.is_batch_paused = False
+    push_log(state.active_buffer, "[Batch] Resuming batch queue execution...")
+    show_alert("Resuming batch processing...", alert_type='info')
+    if not state.is_batch_running and state.batch_queue:
+        background_tasks.create(process_batch_queue(state.batch_queue[state.batch_current_idx:]))
+    refresh_all()
+
+def stop_batch():
+    state.cancel_batch_flag = True
+    state.is_batch_paused = False
+    state.is_batch_running = False
+    state.batch_queue = []
+    state.batch_current_idx = 0
+    show_alert("Batch processing stopped.", alert_type='warning')
+    refresh_all()
+
 async def process_batch_queue(selected_file_ids: list[str]):
-    """Sequentially processes a specific list of files."""
-    if state.is_batch_running:
+    """Sequentially processes a specific list of files with pause/resume support."""
+    if state.is_batch_running and not state.is_batch_paused:
         show_alert("Batch processing is already running!", alert_type='warning')
         return
 
     state.is_batch_running = True
+    state.is_batch_paused = False
     state.cancel_batch_flag = False
+    state.batch_queue = list(selected_file_ids)
+    state.batch_current_idx = 0
+    state.last_batch_report = {"file_ids": list(selected_file_ids)}
     show_alert(f"Starting batch process for {len(selected_file_ids)} files...", alert_type='info')
     refresh_all()
 
-    for fid in selected_file_ids:
-        if state.cancel_batch_flag:
-            show_alert("Batch processing aborted by user.", alert_type='warning')
-            break
+    try:
+        await ensure_session_initialized()
+        while state.batch_current_idx < len(state.batch_queue):
+            if state.cancel_batch_flag:
+                show_alert("Batch processing stopped by user.", alert_type='warning')
+                break
 
-        f = state.files.get(fid)
-        if not f or f.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
-            continue
+            # Handle Pause state
+            while state.is_batch_paused and not state.cancel_batch_flag:
+                await asyncio.sleep(0.5)
 
-        set_active_buffer(fid)
-        run_translation_simulation(fid)
+            if state.cancel_batch_flag:
+                break
 
-        while state.files[fid].status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING) and not state.cancel_batch_flag:
+            fid = state.batch_queue[state.batch_current_idx]
+            f = state.files.get(fid)
+            if not f or f.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
+                state.batch_current_idx += 1
+                continue
+
+            set_active_buffer(fid)
+            run_translation_simulation(fid)
+
+            # Wait for file to reach a terminal or ready state
+            wait_time = 0.0
+            while state.files.get(fid) and state.files[fid].status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING) and not state.cancel_batch_flag:
+                if state.is_batch_paused:
+                    break
+                await asyncio.sleep(0.5)
+                wait_time += 0.5
+                if wait_time > 180.0:  # 3 minutes safety timeout per file
+                    push_log(fid, "[Batch] File processing timed out.")
+                    break
+                
+            if state.is_batch_paused:
+                while state.is_batch_paused and not state.cancel_batch_flag:
+                    await asyncio.sleep(0.5)
+                if state.cancel_batch_flag:
+                    break
+
+            state.batch_current_idx += 1
             await asyncio.sleep(0.5)
-            
-        await asyncio.sleep(1.0)
 
-    state.is_batch_running = False
-    state.cancel_batch_flag = False
-    show_alert("Batch queue completed!", alert_type='positive')
-    refresh_all()
+        if not state.cancel_batch_flag and not state.is_batch_paused:
+            show_alert("Batch queue completed!", alert_type='positive')
+    except Exception as exc:
+        show_alert(f"Batch processing encountered an issue: {exc}", alert_type='negative')
+    finally:
+        if state.batch_current_idx >= len(state.batch_queue) or state.cancel_batch_flag or not state.is_batch_paused:
+            state.is_batch_running = False
+            state.is_batch_paused = False
+            state.cancel_batch_flag = False
+            state.batch_queue = []
+            state.batch_current_idx = 0
+        refresh_all()
 
 def open_batch_dialog():
+    if state.is_batch_running:
+        show_alert("Batch is currently running. Click Stop Batch in the sidebar if you wish to cancel.", alert_type='warning')
+        return
+
     valid_files = [f for f in state.files.values() if f.status in (FileStatus.QUEUED, FileStatus.FAILED, FileStatus.EDITED_PENDING, FileStatus.REJECTED)]
     if not valid_files:
         show_alert("No eligible files to batch process (all files are either Done or Running).", alert_type='warning')
         return
 
-    nodes = []
-    for folder, folder_files in folder_tree().items():
-        children = [{'id': f.file_id, 'label': str(f.filename)} for f in folder_files if f in valid_files]
-        if children: nodes.append({'id': f'folder_{folder}', 'label': f'📂 {folder}', 'children': children})
+    valid_file_ids = {f.file_id for f in valid_files}
+    valid_files_map = {fid: f for fid, f in state.files.items() if fid in valid_file_ids}
 
-    with ui.dialog() as dlg, ui.card().classes('w-[500px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white'):
+    # Build hierarchical tree nodes for the valid files
+    nodes, expanded_folders = build_hierarchical_file_tree(
+        valid_files_map,
+        search_query="",
+        status_filter="All",
+        module_filter="All"
+    )
+
+    with ui.dialog() as dlg, ui.card().classes('w-[520px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white'):
         ui.label('📦 BATCH PROCESSING').classes('text-xl font-black mb-1 tracking-tight')
         ui.label('Select the folders or individual files you want to modernize.').classes('text-sm text-gray-600 mb-4')
         
         with ui.row().classes('w-full justify-end gap-2 mb-2'):
-            def select_all():
-                tree._props['ticked'] = [f.file_id for f in valid_files]
-                tree.update()
-            def deselect_all():
-                tree._props['ticked'] = []
-                tree.update()
-            ui.button('Select All', on_click=select_all).props('flat size=sm text-color=blue').classes('font-bold')
-            ui.button('Clear', on_click=deselect_all).props('flat size=sm text-color=gray').classes('font-bold')
+            ui.button('Select All', on_click=lambda: tree.select_all()).props('flat size=sm text-color=blue').classes('font-bold')
+            ui.button('Clear', on_click=lambda: tree.clear_all()).props('flat size=sm text-color=gray').classes('font-bold')
         
-        tree = ui.tree(nodes, tick_strategy='leaf').classes('w-full border-2 border-black p-2 bg-gray-50 h-[300px] overflow-y-auto')
+        selected_ticked_keys: list[str] = []
+        def _on_ticked_change(ticked: list[str]):
+            nonlocal selected_ticked_keys
+            selected_ticked_keys = list(ticked)
+
+        tree = LazyFileTree(
+            nodes=nodes,
+            root_path=state.project_root,
+            tick_strategy='leaf',
+            initial_expanded=expanded_folders,
+            height='300px',
+            on_ticked_change=_on_ticked_change,
+        ).classes('w-full border-2 border-black p-2 bg-gray-50')
 
         with ui.row().classes('w-full justify-end gap-4 mt-6'):
             ui.button('Cancel', on_click=dlg.close).props('flat text-color=black font-bold').classes('border-2 border-black font-black px-6 py-2')
             
             def start_batch():
-                # Read the selected files directly from the tree element
-                selected = tree._props.get('ticked', [])
+                selected = []
+                keys_to_check = list(tree.ticked) if tree.ticked else list(selected_ticked_keys)
+                for key in keys_to_check:
+                    file_id = _find_file_id_by_tree_key(key)
+                    if file_id and file_id in valid_file_ids and file_id not in selected:
+                        selected.append(file_id)
                 if not selected:
                     show_alert("Please select at least one file.", alert_type='warning')
                     return
                 dlg.close()
                 background_tasks.create(process_batch_queue(selected))
                 
-            # Make sure this button is OUTSIDE the def start_batch() function!
             ui.button('Start Batch', on_click=start_batch).props('color=blue').classes('border-2 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)] font-black px-8 py-2 text-white hover:-translate-y-px hover:-translate-x-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all')
             
     dlg.open()
@@ -1086,7 +1591,7 @@ def render_welcome():
 
             # ── Demo button ───────────────────────────────────────────────
             ui.html('<div style="color:#888;font-weight:700;font-size:0.9rem;margin:8px 0;">\u2500\u2500\u2500 OR \u2500\u2500\u2500</div>')
-            ui.button('Load Demo Project (Mock Data)', on_click=load_demo_project).props('color=blue').classes(
+            ui.button('Load Test Scripts', on_click=load_demo_project).props('color=blue').classes(
                 'w-full max-w-md border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-black py-2'
             )
 
@@ -1095,8 +1600,8 @@ def render_welcome():
 # ============================================================================
 # SIDEBAR
 # ============================================================================
-def render_settings_dialog():
-    with ui.dialog() as settings_dialog, ui.card().classes('w-[400px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6'):
+def open_settings_dialog():
+    with ui.dialog() as settings_dialog, ui.card().classes('w-[400px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white'):
         ui.label('⚙️ SYSTEM SETTINGS').classes('text-xl font-black mb-4 tracking-tight')
         
         # API Key Input
@@ -1108,8 +1613,12 @@ def render_settings_dialog():
         
         # Max Iterations Input
         ui.label('Max Sandbox Iterations').classes('text-sm font-bold text-gray-700 uppercase')
-        ui.number(min=1, max=10, format='%d') \
-            .bind_value(state, 'max_iterations') \
+        def _on_max_iter_change(e):
+            try:
+                state.max_iterations = int(e.value) if e.value is not None else 3
+            except (ValueError, TypeError):
+                state.max_iterations = 3
+        ui.number(min=1, max=10, step=1, precision=0, format='%d', value=int(state.max_iterations or 3), on_change=_on_max_iter_change) \
             .classes('w-full mb-6') \
             .props('outlined dense')
             
@@ -1118,212 +1627,268 @@ def render_settings_dialog():
                 .props('color=black text-color=white unelevated') \
                 .classes('font-bold px-6 py-2 hover:-translate-y-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,0.5)] transition-all')
             
-    return settings_dialog
+    settings_dialog.open()
+
+def open_clear_workspace_dialog():
+    with ui.dialog() as confirm_dialog, ui.card().classes('w-[420px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white'):
+        ui.label('Clear Workspace?').classes('text-xl font-black mb-2 tracking-tight')
+        ui.label('This will remove all files from the current session. Unsaved changes will be lost.').classes('text-sm text-gray-600 mb-4')
+        with ui.row().classes('w-full justify-end gap-3'):
+            ui.button('Cancel', on_click=confirm_dialog.close).props('flat text-color=black').classes('border-2 border-black font-black px-4 py-1')
+            def do_clear():
+                state.files.clear()
+                state.active_buffer = None
+                state.project_root = None
+                state.import_mode = None
+                state.is_batch_running = False
+                state.cancel_batch_flag = False
+                state.is_thinking = False
+                confirm_dialog.close()
+                refresh_all()
+            ui.button('Clear', on_click=do_clear).props('color=negative').classes('border-2 border-black font-black px-6 py-1 text-white shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]')
+    confirm_dialog.open()
 
 @ui.refreshable
 def render_sidebar():
-    with ui.column().classes('w-full h-full p-0 m-0 bg-white'):
+    with ui.column().classes('relative w-full h-full p-0 m-0 bg-white select-none overflow-hidden flex flex-col'):
         
-        # 1. FIXED HEADER
-        with ui.row().classes('w-full p-4 pb-2 gap-2 items-center justify-between flex-nowrap'):
-            ui.html('<div class="sidebar-brand text-2xl font-black truncate tracking-tighter">REVIVOAI</div>')
-            
-            with ui.column().classes('gap-1 items-stretch flex-shrink-0 w-24'):
-                btn_cls = (
-                    'group relative bg-white py-1.5 px-3 text-xs font-semibold text-black text-center cursor-pointer '
-                    'after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-black '
-                    'transition-all duration-200 after:transition-all after:duration-200 '
-                    'hover:after:h-full focus:ring-2 focus:ring-yellow-300 focus:outline-0 border border-gray-300 hover:border-black'
-                )
+        # 1. CLEAN IDE EXPLORER HEADER (2 non-overlapping rows)
+        with ui.column().classes('w-full p-0 m-0 border-b-2 border-black flex-shrink-0'):
+            # Row 1: Brand & Batch Action
+            with ui.row().classes('w-full px-3 py-2 bg-yellow-50 items-center justify-between flex-nowrap border-b border-gray-300'):
+                ui.label('REVIVOAI').classes('font-black text-xs tracking-wider text-black bg-yellow-300 px-2 py-0.5 border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]')
                 
-                f_btn = ui.element('div').classes(btn_cls).on('click', open_workspace_file_picker)
-                with f_btn:
-                    ui.label('+ Files').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
-                    
-                p_btn = ui.element('div').classes(btn_cls).on('click', add_project_to_workspace_from_dialog)
-                with p_btn:
-                    ui.label('+ Project').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
-
-        # --- BATCH PROCESSING CONTROLS ---
                 if state.is_batch_running:
-                    cancel_btn = ui.element('div').classes(btn_cls.replace('bg-white', 'bg-red-50').replace('hover:border-black', 'hover:border-red-500')).on('click', lambda: setattr(state, 'cancel_batch_flag', True))
-                    with cancel_btn:
-                        ui.label('🛑 Stop Batch').classes('relative z-10 pointer-events-none block text-red-600 group-hover:text-white transition-colors duration-200')
+                    with ui.row().classes('items-center gap-1'):
+                        if state.is_batch_paused:
+                            ui.button('▶️ Resume', on_click=resume_batch) \
+                                .props('size=xs color=green text-color=white unelevated') \
+                                .classes('font-bold border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] text-[11px] px-2 py-0.5') \
+                                .tooltip('Resume Paused Batch')
+                        else:
+                            ui.button('⏸️ Pause', on_click=pause_batch) \
+                                .props('size=xs color=warning text-color=black unelevated') \
+                                .classes('font-bold border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] text-[11px] px-2 py-0.5') \
+                                .tooltip('Pause Batch to inspect/edit')
+                        ui.button('🛑 Stop', on_click=stop_batch) \
+                            .props('size=xs color=red text-color=white unelevated') \
+                            .classes('font-bold border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] text-[11px] px-2 py-0.5') \
+                            .tooltip('Stop Active Batch')
                 else:
-                    b_btn = ui.element('div').classes(btn_cls.replace('bg-white', 'bg-blue-50').replace('hover:border-black', 'hover:border-blue-500')).on('click', open_batch_dialog)
-                    with b_btn:
-                        ui.label('📦 Run Batch').classes('relative z-10 pointer-events-none block text-blue-600 group-hover:text-white transition-colors duration-200')
+                    ui.button('📦 Run Batch', on_click=open_batch_dialog) \
+                        .props('size=xs color=blue text-color=white unelevated') \
+                        .classes('font-bold border-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:-translate-y-px text-[11px] px-2.5 py-0.5') \
+                        .tooltip('Run Batch Processing')
 
-        # 2. SCROLLABLE FILE TREE
-        with ui.scroll_area().classes('flex-1 w-full px-2 mt-2'):
-            with ui.column().classes('w-full gap-1 pb-4'):
+            # Row 2: Workspace Explorer title & Action Icons
+            project_name = Path(state.project_root).name if state.project_root else "WORKSPACE"
+            with ui.row().classes('w-full px-3 py-1 bg-gray-50 items-center justify-between flex-nowrap'):
+                with ui.row().classes('items-center gap-1 min-w-0 flex-1'):
+                    ui.label('EXPLORER:').classes('text-[10px] font-black tracking-widest text-gray-500 uppercase flex-shrink-0')
+                    ui.label(project_name).classes('text-[10px] font-black text-gray-800 uppercase truncate max-w-[130px]')
                 
-                def matches_filters(f: ProjectFile) -> bool:
-                    fname = str(f.filename).lower() if f.filename else ""
-                    if state.search_query and state.search_query.lower() not in fname: 
-                        return False
-                    status_val = getattr(f.status, 'value', str(f.status))
-                    if state.status_filter != "All" and status_val != state.status_filter: 
-                        return False
-                    folder_name = str(f.folder) if f.folder else "Root"
-                    if state.module_filter != "All" and folder_name != state.module_filter: 
-                        return False
-                    return True
+                with ui.row().classes('items-center gap-0.5 flex-shrink-0'):
+                    ui.button(icon='note_add', on_click=open_workspace_file_picker) \
+                        .props('flat round dense size=xs text-color=black') \
+                        .tooltip('Add Files to Workspace')
+                    ui.button(icon='create_new_folder', on_click=add_project_to_workspace_from_dialog) \
+                        .props('flat round dense size=xs text-color=black') \
+                        .tooltip('Open Folder / Project')
+                    ui.button(icon='unfold_less', on_click=lambda: tree_ref.collapse_all() if 'tree_ref' in locals() else None) \
+                        .props('flat round dense size=xs text-color=black') \
+                        .tooltip('Collapse All Folders')
 
-                for folder, folder_files in folder_tree().items():
-                    visible = [f for f in folder_files if matches_filters(f)]
-                    if not visible: continue
-                    
-                    warn_count = folder_has_warning(folder_files)
-                    warn_badge = f'&nbsp;&nbsp;<span class="warn-badge"> ⚠️ </span>' if warn_count else ""
-                    
-                    is_expanded = folder in state.expanded_folders
-                    icon = "▼" if is_expanded else "▶"
-                    
-                    with ui.column().classes('w-full mb-1'):
-                        with ui.row().classes('w-full items-center cursor-pointer sidebar-folder') as folder_row:
-                            ui.html(f'{icon}&nbsp; 📂 {folder}{warn_badge}')
-                            def toggle_folder(e, fld=folder):
-                                if fld in state.expanded_folders: state.expanded_folders.remove(fld)
-                                else: state.expanded_folders.add(fld)
-                                render_sidebar.refresh()
-                            folder_row.on('click', toggle_folder)
-                        
-                        if is_expanded:
-                            with ui.column().classes('w-full pl-2 gap-0'):
-                                for i, f in enumerate(visible):
-                                    meta = STATUS_META.get(f.status, {"icon": "❓", "label": "UNKNOWN", "color": "gray"})
-                                    is_active = state.active_buffer == f.file_id
-                                    
-                                    prefix = "└─" if i == len(visible)-1 else "├─"
-                                    button_label = f'{prefix} {meta["icon"]} {f.filename}'
-                                    
-                                    bg_props = 'unelevated color="grey-4"' if is_active else 'flat'
-                                    text_color = 'black' if is_active else 'grey-8'
-                                    font_weight = 'font-bold' if is_active else 'font-normal'
-                                    
-                                    with ui.row().classes('w-full items-center wrap-none gap-0'):
-                                        btn = ui.button(button_label, on_click=lambda e, fid=f.file_id: set_active_buffer(fid))
-                                        btn.props(f'{bg_props} align="left" text-color="{text_color}" no-caps dense').classes(f'flex-1 truncate {font_weight}')
+        # 2. FULL-HEIGHT HIERARCHICAL IDE FILE TREE (Maximized Space)
+        sidebar_nodes, expanded_folders = build_hierarchical_file_tree(
+            state.files,
+            search_query="",
+            status_filter="All",
+            module_filter="All"
+        )
 
-        # 3. FIXED FOOTER
-        with ui.column().classes('w-full p-4 border-t border-gray-200 bg-gray-50 mt-auto'):
-            # --- Settings Dialog & Trigger Button ---
-            settings_modal = render_settings_dialog()
-            
-            btn_settings = ui.element('div').classes(
-                'group relative w-full bg-white px-4 py-2 font-semibold text-gray-700 text-center cursor-pointer '
-                'after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-gray-700 '
-                'transition-all duration-200 hover:after:h-full focus:outline-0 border border-gray-300 hover:border-gray-700 mb-2'
-            ).on('click', settings_modal.open)
-            with btn_settings:
-                ui.label('⚙️ Configuration').classes('relative z-10 pointer-events-none block group-hover:text-white transition-colors duration-200')
+        with ui.column().classes('flex-1 w-full px-1 py-1 overflow-hidden min-h-0'):
+            def on_file_selected(selected_key: str | None):
+                file_id = _find_file_id_by_tree_key(selected_key)
+                if file_id:
+                    set_active_buffer(file_id)
 
-            # --- Clear Workspace Dialog ---
-            with ui.dialog() as confirm_dialog, ui.card():
-                ui.label('Clear Workspace?').classes('text-lg font-bold')
-                ui.label('This will remove all files from the current session. Unsaved changes will be lost.')
-                with ui.row().classes('w-full justify-end mt-4'):
-                    ui.button('Cancel', on_click=confirm_dialog.close).props('flat')
-                    def do_clear():
-                        state.files.clear()
-                        state.active_buffer = None
-                        state.project_root = None
-                        state.import_mode = None
-                        confirm_dialog.close()
-                        refresh_all()
-                    ui.button('Clear', on_click=do_clear).props('color=negative')
+            tree_ref = LazyFileTree(
+                nodes=sidebar_nodes,
+                initial_selected=_canonical_fs_path(state.files[state.active_buffer].path, state.project_root) if state.active_buffer and state.active_buffer in state.files else None,
+                initial_expanded=expanded_folders,
+                height='100%',
+                on_selected_change=on_file_selected,
+            ).classes('w-full h-full')
 
-            btn = ui.element('div').classes(
-                'group relative w-full bg-white px-4 py-2 font-semibold text-red-500 text-center cursor-pointer '
-                'after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-red-500 '
-                'transition-all duration-200 after:transition-all after:duration-200 '
-                'hover:after:h-full focus:ring-2 focus:ring-red-300 focus:outline-0 border border-gray-300 hover:border-red-500 mt-2'
-            ).on('click', confirm_dialog.open)
-            with btn:
-                ui.label('🗑️ Clear Workspace').classes('relative z-10 pointer-events-none block group-hover:text-black transition-colors duration-200')
+        # 3. SLIM FOOTER STATUS BAR
+        total_files = len(state.files)
+        passed_count = sum(1 for f in state.files.values() if f.status in (FileStatus.PASSED, FileStatus.APPROVED))
+        failed_count = sum(1 for f in state.files.values() if f.status in (FileStatus.FAILED, FileStatus.REJECTED))
+        queued_count = sum(1 for f in state.files.values() if f.status in (FileStatus.QUEUED, FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING))
+
+        with ui.row().classes('w-full px-2.5 py-1.5 border-t-2 border-black bg-gray-100 items-center justify-between flex-shrink-0 text-[10px] font-mono'):
+            with ui.row().classes('items-center gap-2 font-bold text-gray-700'):
+                ui.label(f'📁 {total_files}')
+                if passed_count:
+                    ui.label(f'✓ {passed_count}').classes('text-green-700')
+                if failed_count:
+                    ui.label(f'! {failed_count}').classes('text-red-600 font-black')
+                if queued_count:
+                    ui.label(f'⏳ {queued_count}').classes('text-blue-600')
+
+            with ui.row().classes('items-center gap-1'):
+                ui.button(icon='settings', on_click=open_settings_dialog) \
+                    .props('flat round dense size=xs text-color=black') \
+                    .tooltip('Configuration & API Key')
+
+                ui.button(icon='delete_outline', on_click=open_clear_workspace_dialog) \
+                    .props('flat round dense size=xs text-color=red') \
+                    .tooltip('Clear Workspace')
+
+        # 4. DRAGGABLE RESIZER HANDLE
+        ui.element('div').classes('sidebar-resizer').props('title="Drag to resize sidebar • Double-click to reset"')
 
 # ============================================================================
 # STATE MACHINE TRACKER (UI COMPONENT)
 # ============================================================================
 def render_segmented_status_header(f: ProjectFile, current_state: str, progress: int = 50, show_rerun: bool = False, rerun_callback=None):
-    nodes = ["Analyze", "Propose", "Execute", "Evaluate"]
+    nodes = ["ANALYZE", "PROPOSE", "EXECUTE", "EVALUATE"]
 
     state_map = {
-        "Starting": "Analyze",
-        "llm_patch_node": "Propose",
-        "sandbox_node": "Execute",
+        "Starting": "ANALYZE",
+        "llm_patch_node": "PROPOSE",
+        "_llm_patch_node": "PROPOSE",
+        "sandbox_node": "EXECUTE",
+        "_sandbox_node": "EXECUTE",
+        "telemetry_node": "EVALUATE",
+        "_telemetry_node": "EVALUATE",
         "Done": "Done"
     }
     mapped_state = state_map.get(current_state, current_state)
     
-    if mapped_state in nodes:
-        currentStep = nodes.index(mapped_state)
-    elif mapped_state == "Done":
+    if mapped_state == "ANALYZE" or (mapped_state == "PROPOSE" and getattr(state, 'thinking_phase', 0) == 0):
+        currentStep = 0
+    elif mapped_state == "PROPOSE":
+        currentStep = 1
+    elif mapped_state == "EXECUTE":
+        currentStep = 2
+    elif mapped_state == "EVALUATE":
+        currentStep = 3
+    elif mapped_state == "Done" or f.status in (FileStatus.PASSED, FileStatus.APPROVED, FileStatus.FAILED, FileStatus.REJECTED):
         currentStep = 4
+    elif mapped_state in nodes:
+        currentStep = nodes.index(mapped_state)
     else:
         currentStep = -1
 
-    # Define the colors based on status (No wrapping "if" statement here!)
-    if f.status in (FileStatus.QUEUED, FileStatus.EDITED_PENDING):
-        theme_color = "#d1d5db"
-        text_color = "var(--neo-black)"
-        badge_label = "QUEUED" if f.status == FileStatus.QUEUED else "EDITED"
-    elif f.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
-        theme_color = "var(--neo-green)"
-        text_color = "var(--neo-black)"
-        badge_label = "RUNNING"
-    elif f.status in (FileStatus.PASSED, FileStatus.APPROVED):
-        theme_color = "var(--neo-green)"
-        text_color = "var(--neo-black)"
-        badge_label = "DONE"
-    elif f.status in (FileStatus.FAILED, FileStatus.REJECTED):
-        theme_color = "var(--neo-red)"
-        text_color = "var(--neo-white)"
-        badge_label = "FAILED"
+    # 1. Workspace Name
+    workspace_name = Path(state.project_root).name if state.project_root else "WORKSPACE"
+    
+    # 2. File Name (formatted and truncated if too long)
+    raw_name = f.filename if f.filename else (Path(f.path).name if f.path else "Untitled")
+    max_len = 38
+    if len(raw_name) > max_len:
+        truncated_name = raw_name[:max_len - 3] + "..."
     else:
-        theme_color = "#d1d5db"
-        text_color = "var(--neo-black)"
-        badge_label = "UNKNOWN"
+        truncated_name = raw_name
 
-    segments_html = ""
-    for i, node in enumerate(nodes):
+    # 3. Iteration counts
+    try:
+        curr_iter = int(getattr(f, 'iteration', 1) or 1)
+    except (ValueError, TypeError):
+        curr_iter = 1
+    try:
+        max_iter = int(getattr(state, 'max_iterations', 3) or 3)
+    except (ValueError, TypeError):
+        max_iter = 3
+
+    # 4. Generate step items
+    steps_html = []
+    for i, name in enumerate(nodes):
+        step_num = i + 1
         if i < currentStep:
-            # Done
-            dot = f'<div class="w-2 h-2 rounded-full mx-auto" style="background-color: {theme_color}; border: 1.5px solid var(--neo-black);"></div>'
-            label_class = "font-bold text-black"
-            fill = 100
+            # Completed step: solid gold box, solid gold label, solid gold bar
+            step_box = f'<span class="bg-[#ffc700] text-black font-mono font-black text-xs px-2 py-0.5 border border-[#ffc700] mr-2 flex-shrink-0">{step_num}</span>'
+            step_label = f'<span class="font-mono font-black text-xs sm:text-sm tracking-wider text-[#ffc700] uppercase truncate">{name}</span>'
+            progress_bar = '<div class="w-full h-2.5 bg-[#ffc700] mt-2.5"></div>'
         elif i == currentStep:
-            # Active
-            dot = f'<div class="w-2 h-2 rounded-full mx-auto" style="background-color: {theme_color}; border: 1.5px solid var(--neo-black);"></div>'
-            label_class = "font-bold text-black"
-            fill = progress
+            # Active step: gold box, gold label, partial gold progress bar
+            fill_pct = max(progress, 20)
+            step_box = f'<span class="bg-[#ffc700] text-black font-mono font-black text-xs px-2 py-0.5 border border-[#ffc700] mr-2 flex-shrink-0">{step_num}</span>'
+            step_label = f'<span class="font-mono font-black text-xs sm:text-sm tracking-wider text-[#ffc700] uppercase truncate">{name}</span>'
+            progress_bar = f'''
+            <div class="w-full h-2.5 bg-[#333333] mt-2.5 overflow-hidden relative">
+                <div class="h-full bg-[#ffc700] transition-all duration-300" style="width: {fill_pct}%;"></div>
+            </div>
+            '''
         else:
-            # Pending
-            dot = ""
-            label_class = "font-medium text-gray-400"
-            fill = 0
-            
-        segments_html += f'''
-        <div class="flex flex-col flex-1 relative">
-            <div class="h-2 mb-2">{dot}</div>
-            <div class="text-center font-mono text-sm uppercase mb-2 {label_class}">{node}</div>
-            <div class="w-full h-4 overflow-hidden bg-gray-200" style="border: 2px solid var(--neo-black); border-radius: 6px;">
-                <div class="h-full transition-all duration-300" style="background-color: {theme_color}; width: {fill}%; border-right: 2px solid var(--neo-black);"></div>
+            # Pending step: dark gray box with border, muted gray label, dark bar
+            step_box = f'<span class="border border-[#555555] text-[#999999] font-mono font-bold text-xs px-2 py-0.5 mr-2 flex-shrink-0">{step_num}</span>'
+            step_label = f'<span class="font-mono font-bold text-xs sm:text-sm tracking-wider text-[#999999] uppercase truncate">{name}</span>'
+            progress_bar = '<div class="w-full h-2.5 bg-[#333333] mt-2.5"></div>'
+
+        steps_html.append(f'''
+        <div class="flex-1 flex flex-col min-w-0">
+            <div class="flex items-center no-wrap">
+                {step_box}
+                {step_label}
+            </div>
+            {progress_bar}
+        </div>
+        ''')
+
+    step_display_num = min(currentStep + 1, 4) if currentStep >= 0 else 1
+    
+    # Sub-footer text
+    if f.status in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
+        status_text = '<span class="text-[#ffc700] font-mono font-bold">~ RUNNING AGENTIC PIPELINE</span>'
+    elif f.status in (FileStatus.PASSED, FileStatus.APPROVED):
+        status_text = '<span class="text-[#22c55e] font-mono font-bold">✓ PIPELINE PASSED</span>'
+    elif f.status in (FileStatus.FAILED, FileStatus.REJECTED):
+        status_text = '<span class="text-[#ef4444] font-mono font-bold">✗ TEST FAILED</span>'
+    else:
+        status_text = '<span class="text-[#999999] font-mono">READY</span>'
+
+    footer_left = f"step {step_display_num} of 4 · attempt {curr_iter} of {max_iter} · halts after {max_iter} failed patches"
+
+    with ui.column().classes('w-full p-0 mb-6 border-2 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)] bg-[#1e1e1e] overflow-hidden'):
+        # 1. Top Yellow Banner
+        ui.html(f'''
+        <div class="w-full bg-[#ffc700] p-4 sm:p-5 flex items-center justify-between border-b-2 border-black flex-nowrap gap-4">
+            <div class="flex flex-col min-w-0 flex-1">
+                <div class="font-mono font-bold text-xs sm:text-sm tracking-widest text-black/80 uppercase truncate">
+                    WORKSPACE: {html.escape(workspace_name)}
+                </div>
+                <div class="font-mono font-black text-2xl sm:text-3xl text-black uppercase tracking-tight truncate mt-0.5" title="{html.escape(raw_name)}">
+                    {html.escape(truncated_name)}
+                </div>
+            </div>
+            <div class="flex-shrink-0 flex items-center gap-3">
+                <div class="bg-[#1e1e1e] text-white px-5 py-2 border-2 border-black flex flex-col items-center justify-center shadow-[2px_2px_0_0_rgba(0,0,0,0.4)]">
+                    <div class="text-[10px] font-mono font-bold tracking-widest text-[#ffc700] uppercase">ITERATION</div>
+                    <div class="text-xl sm:text-2xl font-mono font-black text-white leading-none mt-0.5">{curr_iter} / {max_iter}</div>
+                </div>
             </div>
         </div>
-        '''
-
-    with ui.column().classes('w-full border-[3px] border-black bg-[#fafafa] p-4 mb-6 gap-0'):
-        if show_rerun and rerun_callback:
-            with ui.row().classes('w-full justify-end items-center mb-2 flex-nowrap'):
-                ui.button("Re-run", on_click=rerun_callback).props('outline size=sm').classes('mr-1')
-        
-        ui.html(f'''
-        <div class="flex w-full gap-4 mt-2">
-            {segments_html}
-        </div>
         ''').classes('w-full')
+
+        # 2. Bottom Dark Step & Progress Panel
+        with ui.column().classes('w-full bg-[#1e1e1e] p-4 sm:p-5 gap-4'):
+            # Steps row
+            ui.html(f'''
+            <div class="flex items-center gap-4 sm:gap-6 w-full flex-nowrap">
+                {''.join(steps_html)}
+            </div>
+            ''').classes('w-full')
+
+            # Footer row (with optional rerun button if show_rerun)
+            with ui.row().classes('w-full items-center justify-between pt-1 text-xs font-mono flex-nowrap'):
+                ui.html(f'<span class="text-[#999999] truncate">{footer_left}</span>')
+                
+                with ui.row().classes('items-center gap-3 flex-shrink-0'):
+                    ui.html(status_text)
+                    if show_rerun and rerun_callback:
+                        ui.button("Re-run", on_click=rerun_callback).props('size=xs color=warning text-color=black').classes('font-black px-3 py-1 border border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)]')
 
 # ============================================================================
 # MAIN CONTENT VIEWER
@@ -1357,7 +1922,7 @@ def render_main():
             render_main.refresh()
 
         with ui.element('div').classes('fixed z-40 bg-[#1e1e1e]').style(
-            f'top:0; right:0; bottom:0; left:{SIDEBAR_WIDTH_PX}px; overflow:hidden;'
+            'top:0; right:0; bottom:0; left:var(--sidebar-width, 350px); overflow:hidden;'
         ):
             with ui.row().classes('w-full justify-between items-center p-2').style('height:56px; flex-shrink:0;'):
                 ui.label(_fs_title).classes('text-white text-lg font-bold')
@@ -1396,7 +1961,7 @@ def render_main():
                 ).classes('w-full').style('height:calc(100vh - 56px); overflow:hidden;')
         return
 
-    # Embedded LANGGRAPH TRACKER (Segmented Bar)
+    # Embedded LANGGRAPH TRACKER (Segmented Bar) - only shown during active translation / testing
     curr_state = state.agent_state.get(active_id, "Done" if f.status != FileStatus.QUEUED else "Idle")
     show_rerun = f.status in (FileStatus.FAILED, FileStatus.EDITED_PENDING)
     
@@ -1410,39 +1975,49 @@ def render_main():
             current_state=curr_state,
             progress=simulated_progress,
             show_rerun=show_rerun, 
-            rerun_callback=lambda: run_sandbox_simulation(active_id)
+            rerun_callback=lambda: open_retest_dialog(active_id)
         )
 
     skip_to_action_bar = False
     
     def render_terminal(is_half=False):
         width_class = "w-full" if not is_half else "flex-1"
-        margin_class = "mt-2" if not is_half else "m-0"
+        margin_class = "mt-4 mb-4" if not is_half else "m-0"
         height_class = "h-[500px]" if is_half else "h-[600px]"
-        with ui.column().classes(f'{width_class} {margin_class} {height_class} border-4 border-black shadow-[4px_4px_0_0] shadow-black bg-gray-900 rounded-lg overflow-hidden flex flex-col flex-nowrap'):
-            with ui.row().classes('w-full bg-black px-4 py-2 items-center justify-between border-b-2 border-gray-700 flex-shrink-0 flex-nowrap'):
-                ui.label("▶ LANGGRAPH EXECUTION TERMINAL").classes('text-green-400 font-mono text-sm font-bold truncate')
-                ui.label("STDOUT / STDERR").classes('text-gray-500 font-mono text-xs flex-shrink-0')
-                
-            terminal = ui.log(max_lines=1000).classes('w-full flex-1 bg-gray-900 text-green-400 p-4 font-mono text-xs outline-none border-none min-h-0 overflow-y-auto')
+        with ui.column().classes(f'{width_class} {margin_class} {height_class} p-0 overflow-hidden flex flex-col flex-nowrap'):
+            terminal = StructuredTerminal(
+                logs=state.execution_logs.get(active_id, []),
+                max_logs=1000,
+                on_cleared=lambda: state.execution_logs.update({active_id: []}),
+            ).classes('w-full h-full')
             state.current_terminal = terminal
-            for line in state.execution_logs.get(active_id, []):
-                terminal.push(line)
+
+    workspace_name = Path(state.project_root).name if state.project_root else "WORKSPACE"
+    raw_name = f.filename if f.filename else (Path(f.path).name if f.path else "Untitled")
+    truncated_name = (raw_name[:35] + "...") if len(raw_name) > 38 else raw_name
 
     # CARD 2: Progress / Action State
     if f.status == FileStatus.QUEUED:
         skip_to_action_bar = True
-        with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
-            with ui.row().classes('neo-card-header compact-header w-full justify-between items-center'):
-                ui.html('''
-                <div class="flex items-center">
-                    <div class="header-left">
-                        <div class="neo-card-title-group">LEGACY SOURCE CODE</div>
+        with ui.column().classes('w-full neo-card p-0 mb-6 gap-0 overflow-hidden border-2 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)]'):
+            with ui.row().classes('w-full bg-[#ffc700] p-4 sm:p-5 flex items-center justify-between border-b-2 border-black flex-nowrap gap-4'):
+                ui.html(f'''
+                <div class="flex flex-col min-w-0 flex-1">
+                    <div class="font-mono font-bold text-xs sm:text-sm tracking-widest text-black/80 uppercase truncate">
+                        WORKSPACE: {html.escape(workspace_name)}
                     </div>
-                    <div class="stat-pill green">VIEWER</div>
+                    <div class="flex items-center gap-3 mt-0.5">
+                        <div class="font-mono font-black text-2xl sm:text-3xl text-black uppercase tracking-tight truncate mt-0.5" title="{html.escape(raw_name)}">
+                            {html.escape(truncated_name)}
+                        </div>
+                        <div class="stat-pill green font-mono font-bold text-[10px]">VIEW-ONLY</div>
+                    </div>
                 </div>
                 ''')
-                ui.button('Expand', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'source'), render_main.refresh())).props('flat dense size=sm').classes('font-bold')
+                with ui.row().classes('items-center gap-2 flex-shrink-0'):
+                    ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'source'), render_main.refresh())) \
+                        .props('size=sm') \
+                        .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-gray-100 transition-all cursor-pointer')
             MonacoEditor(
                 value=f.legacy_source,
                 language=f.language,
@@ -1460,8 +2035,8 @@ def render_main():
             elif j == i: rows_html.append(f'<div class="thinking-step step-active"><span class="step-icon">▸</span>{html.escape(p)}</div>')
             else: rows_html.append(f'<div class="thinking-step step-pending"><span class="step-icon">·</span>{html.escape(p)}</div>')
             
-        with ui.row().classes('w-full items-stretch gap-6 mb-6 flex-nowrap'):
-            with ui.column().classes('flex-1 h-[500px] neo-card neo-card-spotlight p-0 mb-0'):
+        with ui.row().classes('w-full items-stretch gap-4 sm:gap-6 mb-6 flex-wrap xl:flex-nowrap min-w-0'):
+            with ui.column().classes('flex-1 min-w-[320px] h-[500px] neo-card neo-card-spotlight p-0 mb-0'):
                 ui.html('''
                     <div class="neo-card-header">
                         <div class="header-left">
@@ -1485,8 +2060,8 @@ def render_main():
             elif j == i: rows_html.append(f'<div class="thinking-step step-active"><span class="step-icon">▸</span>{html.escape(p)}</div>')
             else: rows_html.append(f'<div class="thinking-step step-pending"><span class="step-icon">·</span>{html.escape(p)}</div>')
             
-        with ui.row().classes('w-full items-stretch gap-6 mb-6 flex-nowrap'):
-            with ui.column().classes('flex-1 h-[500px] neo-card neo-card-spotlight p-0 mb-0'):
+        with ui.row().classes('w-full items-stretch gap-4 sm:gap-6 mb-6 flex-wrap xl:flex-nowrap min-w-0'):
+            with ui.column().classes('flex-1 min-w-[320px] h-[500px] neo-card neo-card-spotlight p-0 mb-0'):
                 ui.html('''
                     <div class="neo-card-header">
                         <div class="header-left">
@@ -1503,18 +2078,31 @@ def render_main():
     if not skip_to_action_bar and f.status not in (FileStatus.TRANSLATING, FileStatus.SANDBOX_TESTING):
         diff_state_val = state.diff_state.get(active_id, "readonly")
         if diff_state_val == "editing":
-            with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
-                with ui.row().classes('neo-card-header compact-header w-full justify-between items-center'):
-                    ui.html('''
-                    <div class="flex items-center">
-                        <div class="header-left">
-                            <div class="neo-card-title-group">MANUAL EDIT MODE</div>
-                            <div class="header-desc">Manually override AI-generated patch before re-testing.</div>
+            with ui.column().classes('w-full neo-card p-0 mb-6 gap-0 overflow-hidden border-2 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)]'):
+                with ui.row().classes('w-full bg-[#ffc700] p-4 sm:p-5 flex items-center justify-between border-b-2 border-black flex-nowrap gap-4'):
+                    ui.html(f'''
+                    <div class="flex flex-col min-w-0 flex-1">
+                        <div class="font-mono font-bold text-xs sm:text-sm tracking-widest text-black/80 uppercase truncate">
+                            WORKSPACE: {html.escape(workspace_name)}
                         </div>
-                        <div class="stat-pill yellow">EDIT</div>
+                        <div class="font-mono font-black text-2xl sm:text-3xl text-black uppercase tracking-tight truncate mt-0.5" title="{html.escape(raw_name)}">
+                            {html.escape(truncated_name)}
+                        </div>
                     </div>
                     ''')
-                    ui.button('Expand', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'edit'), render_main.refresh())).props('flat dense size=sm').classes('font-bold')
+                    with ui.row().classes('items-center gap-2 flex-shrink-0'):
+                        ui.button('Cancel', icon='close', on_click=lambda: (state.diff_state.update({active_id: "readonly"}), refresh_all())) \
+                            .props('size=sm') \
+                            .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-gray-100 transition-all cursor-pointer')
+
+                        ui.button('Save & Retest', icon='save', on_click=lambda: (save_and_retest(active_id, state.edit_buffer.get(active_id, f.ai_source)), refresh_all())) \
+                            .props('size=sm') \
+                            .classes('bg-black text-white font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-[#22c55e] hover:text-black transition-all cursor-pointer')
+
+                        ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'edit'), render_main.refresh())) \
+                            .props('size=sm') \
+                            .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-gray-100 transition-all cursor-pointer')
+
                 current_draft = state.edit_buffer.get(active_id, f.ai_source)
 
                 def on_monaco_change(new_val: str, fid=active_id):
@@ -1528,23 +2116,35 @@ def render_main():
                     readonly=False,
                     diff_mode=True,
                     on_change=on_monaco_change,
-                ).classes('w-full').style('height:710px; border-top: 3px solid var(--neo-black);')
-                
-                with ui.row().classes('w-full p-4 gap-4 justify-end bg-white').style('border-top: 3px solid var(--neo-black);'):
-                    ui.button("Cancel", on_click=lambda: (state.diff_state.update({active_id: "readonly"}), refresh_all())).props('outline')
-                    ui.button("💾 Save & Re-test", on_click=lambda: (save_and_retest(active_id, state.edit_buffer.get(active_id, f.ai_source)), refresh_all())).props('color=primary')
+                ).classes('w-full').style('height:725px;')
         else:
-            with ui.column().classes('w-full neo-card neo-card-spotlight p-0 mb-6 overflow-hidden'):
-                with ui.row().classes('neo-card-header compact-header w-full justify-between items-center'):
-                    ui.html('''
-                    <div class="flex items-center">
-                        <div class="header-left">
-                            <div class="neo-card-title-group">DIFF VIEWER</div>
+            with ui.column().classes('w-full neo-card p-0 mb-6 gap-0 overflow-hidden border-2 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)]'):
+                with ui.row().classes('w-full bg-[#ffc700] p-4 sm:p-5 flex items-center justify-between border-b-2 border-black flex-nowrap gap-4'):
+                    ui.html(f'''
+                    <div class="flex flex-col min-w-0 flex-1">
+                        <div class="font-mono font-bold text-xs sm:text-sm tracking-widest text-black/80 uppercase truncate">
+                            WORKSPACE: {html.escape(workspace_name)}
                         </div>
-                        <div class="stat-pill blue">DIFF</div>
+                        <div class="flex items-center gap-3 mt-0.5">
+                            <div class="font-mono font-black text-2xl sm:text-3xl text-black uppercase tracking-tight truncate mt-0.5" title="{html.escape(raw_name)}">
+                                {html.escape(truncated_name)}
+                            </div>
+                            <div class="stat-pill green font-mono font-bold text-[10px]">VIEW-ONLY</div>
+                        </div>
                     </div>
                     ''')
-                    ui.button('Expand', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'diff'), render_main.refresh())).props('flat dense size=sm').classes('font-bold')
+                    with ui.row().classes('items-center gap-2 flex-shrink-0'):
+                        ui.button('Edit', icon='edit', on_click=lambda: (start_edit(active_id), render_main.refresh())) \
+                            .props('size=sm') \
+                            .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-[#ff5fd1] hover:text-white transition-all cursor-pointer')
+
+                        ui.button('Retest', icon='replay', on_click=lambda: open_retest_dialog(active_id)) \
+                            .props('size=sm') \
+                            .classes('bg-black text-white font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-[#22c55e] hover:text-black transition-all cursor-pointer')
+
+                        ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'diff'), render_main.refresh())) \
+                            .props('size=sm') \
+                            .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-gray-100 transition-all cursor-pointer')
 
                 MonacoEditor(
                     value=f.ai_source,
@@ -1553,7 +2153,7 @@ def render_main():
                     readonly=True,
                     diff_mode=True,
                     primary_line=f.primary_error_line,
-                ).classes('w-full').style('height:710px; border-top: 3px solid var(--neo-black);')
+                ).classes('w-full').style('height:725px;')
 
         if f.raw_traceback:
             frames = parse_traceback(f.raw_traceback, f.language, f.filename)
@@ -1562,10 +2162,10 @@ def render_main():
             show_full = state.show_full_trace.get(active_id, False)
             with ui.row().classes('w-full justify-end mt-[-1rem] mb-2 gap-2'):
                 if f.status == FileStatus.FAILED and diff_state_val != "editing":
-                    ui.button("✏️ Edit AI code", on_click=lambda: (start_edit(active_id), render_main.refresh())).props('color=blue').classes('w-48')
+                    ui.button("Edit AI code", icon='edit', on_click=lambda: (start_edit(active_id), render_main.refresh())).props('color=blue size=sm').classes('w-44 font-bold')
                 
                 btn_label = "Collapse trace" if show_full else "Show full trace"
-                ui.button(btn_label, on_click=lambda: (state.show_full_trace.update({active_id: not show_full}), render_main.refresh())).props('color=blue').classes('w-48')
+                ui.button(btn_label, on_click=lambda: (state.show_full_trace.update({active_id: not show_full}), render_main.refresh())).props('color=blue size=sm').classes('w-44 font-bold')
 
             with ui.column().classes('w-full neo-card p-0 mb-6'):
                 ui.html("""
@@ -1607,6 +2207,9 @@ def render_main():
     if f.status == FileStatus.REJECTED and f.rejection_note:
         ui.label(f"🚫 Rejection note: {f.rejection_note}").classes('text-gray-400 mt-8 font-bold')
 
+    # Whitespace spacer below the terminal to prevent overlap with floating action bar
+    ui.element('div').classes('w-full h-[60px] flex-shrink-0')
+
     # Embedded the Action Center directly in the page flow
     render_action_bar()
 
@@ -1624,15 +2227,7 @@ def render_action_bar():
     if f.status == FileStatus.QUEUED and not getattr(state, 'is_thinking', False):
         pill_classes += ' animate-action-float'
         
-    with ui.element('div').classes('fixed z-50').style('bottom: 24px; left: calc(50% + 175px); transform: translateX(-50%);'):
-        with ui.dialog() as reject_dialog, ui.card().classes('w-[400px]'):
-            ui.label("Reject Patch").classes('text-xl font-bold')
-            ui.label("Provide a reason for rejecting this AI patch:").classes('text-sm text-gray-500 mb-2')
-            note_input = ui.textarea(value=f.rejection_note, placeholder="Rejection note...").classes('w-full').props('rows=4 autofocus')
-            with ui.row().classes('w-full justify-end gap-2 mt-4'):
-                ui.button("Cancel", on_click=reject_dialog.close).props('flat')
-                ui.button("Confirm Reject", on_click=lambda: (reject_file(active_id, note_input.value), reject_dialog.close(), refresh_all())).props('color=negative')
-
+    with ui.element('div').classes('fixed z-50').style('bottom: 24px; left: calc(50% + var(--sidebar-width, 350px) / 2); transform: translateX(-50%);'):
         with ui.row().classes(pill_classes):
             if getattr(state, 'is_thinking', False):
                 with ui.row().classes('items-center gap-4'):
@@ -1661,22 +2256,13 @@ def render_action_bar():
                     btn2 = ui.button("Start AI Translation", on_click=lambda: run_translation_simulation(active_id)).props('unelevated rounded color=blue').classes('action-pill-btn')
                     if state.is_thinking: btn2.disable()
                 else:
-                    save_retest_primary = f.status == FileStatus.EDITED_PENDING
-                    btn_text = "Save & Re-test" if save_retest_primary else "Re-test"
-                    disabled = f.status not in (FileStatus.FAILED, FileStatus.EDITED_PENDING) or state.is_thinking
-                    
-                    def do_retest():
-                        if state.diff_state.get(active_id) == "editing":
-                            save_and_retest(active_id, state.edit_buffer.get(active_id, f.ai_source))
-                        else:
-                            push_log(active_id, "[System] Developer requested sandbox re-run.")
-                            run_sandbox_simulation(active_id)
-                    
-                    btn3 = ui.button(btn_text, on_click=do_retest).props('unelevated rounded color=primary' if save_retest_primary else 'flat rounded color=grey-8').classes('action-pill-btn')
-                    if disabled: btn3.disable()
-                    
-                    btn4 = ui.button("Reject", on_click=reject_dialog.open).props('unelevated rounded color=negative' if reject_eligible else 'flat rounded color=grey-8').classes('action-pill-btn')
-                    if not reject_eligible: btn4.disable()
+                    if state.diff_state.get(active_id) == "editing":
+                        ui.button("Cancel Edit", on_click=lambda: (state.diff_state.update({active_id: "readonly"}), refresh_all())).props('flat rounded color=grey-8').classes('action-pill-btn')
+                        ui.button("Save & Re-test", icon='save', on_click=lambda: (save_and_retest(active_id, state.edit_buffer.get(active_id, f.ai_source)), refresh_all())).props('unelevated rounded color=primary').classes('action-pill-btn')
+                    else:
+                        ui.button("Re-test", icon='replay', on_click=lambda: open_retest_dialog(active_id)).props('unelevated rounded color=blue').classes('action-pill-btn')
+                        btn4 = ui.button("Reject", on_click=lambda: open_reject_dialog(active_id)).props('unelevated rounded color=negative' if reject_eligible else 'flat rounded color=grey-8').classes('action-pill-btn')
+                        if not reject_eligible: btn4.disable()
 
 # ============================================================================
 # MAIN PAGE
@@ -1687,19 +2273,19 @@ def index():
     
     ui.colors(primary='#ff5fd1', secondary='#fdfbf7', accent='#f5c518', dark='#101010', positive='#00c853', negative='#ff3333', info='#33ccff', warning='#f5c518')
     
-    # REMOVED 'show-if-above' so we can actually collapse the drawer
-    drawer = ui.left_drawer(value=True).props(':breakpoint="0" :width="350"').classes('border-r border-gray-200')
+    is_workspace_active = bool(state.files and not state.import_mode)
+    drawer = ui.left_drawer(value=is_workspace_active).props(
+        'width=350 behavior="desktop" :breakpoint="0" no-swipe-open no-swipe-close bordered'
+    ).classes('relative border-r border-gray-200 overflow-visible')
     state.drawer = drawer
     
-    # Sidebar stays hidden on the pure Welcome Screen (no files, no import active)
-    if not state.files and not state.import_mode:
-        drawer.set_visibility(False)
+    if not is_workspace_active:
         drawer.hide()
         
     with drawer:
         render_sidebar()
         
-    with ui.column().classes('w-full h-full p-8 pb-10 max-w-[1600px] mx-auto'):
+    with ui.column().classes('w-full h-full p-4 sm:p-6 lg:p-8 max-w-[1750px] mx-auto min-w-0 box-border'):
         render_main()
 
 

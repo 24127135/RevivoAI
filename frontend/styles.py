@@ -9,6 +9,95 @@ THE GLOBAL OVERRIDE (Align NiceGUI drawer and layout chrome)
 .q-drawer {{
     border-right: 3px solid var(--neo-black) !important;
     background-color: white !important;
+    overflow: visible !important;
+    box-sizing: border-box !important;
+}}
+
+.q-drawer--left {{
+    width: var(--sidebar-width, 350px) !important;
+}}
+
+/* Dynamically align Quasar page container with drawer width */
+.q-page-container {{
+    padding-left: var(--sidebar-width, 350px) !important;
+    transition: padding-left 0.1s ease !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+}}
+
+/* When drawer is closed / hidden (e.g. welcome screen or staging) */
+.q-drawer--left.hidden,
+.q-drawer--left[aria-hidden="true"],
+.q-drawer--left[style*="display: none"] {{
+    display: none !important;
+}}
+
+body:has(.q-drawer--left.hidden) .q-page-container,
+body:has(.q-drawer--left[aria-hidden="true"]) .q-page-container,
+body:has(.q-drawer--left[style*="display: none"]) .q-page-container,
+body.drawer-hidden .q-page-container {{
+    padding-left: 0 !important;
+    --sidebar-width: 0px !important;
+}}
+
+/* Sidebar Resizer Handle */
+.sidebar-resizer {{
+    position: absolute;
+    top: 0;
+    right: -4px;
+    bottom: 0;
+    width: 8px;
+    cursor: col-resize;
+    z-index: 1000;
+    background: transparent;
+    transition: background 0.15s ease;
+    user-select: none;
+    -webkit-user-select: none;
+}}
+
+.sidebar-resizer::after {{
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 3px;
+    height: 40px;
+    border-radius: 2px;
+    background: var(--neo-black);
+    opacity: 0;
+    transition: opacity 0.15s ease, height 0.15s ease, background 0.15s ease;
+}}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer.is-resizing::after {{
+    opacity: 1;
+    height: 56px;
+    background: var(--neo-pink);
+    box-shadow: 0 0 6px var(--neo-pink);
+}}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.is-resizing {{
+    background: rgba(255, 95, 209, 0.25);
+}}
+
+body.resizing-sidebar {{
+    cursor: col-resize !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}}
+
+body.resizing-sidebar * {{
+    cursor: col-resize !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    pointer-events: none !important;
+}}
+
+body.resizing-sidebar .sidebar-resizer {{
+    pointer-events: auto !important;
 }}
 
 /* Override default notification bubble for custom HTML alerts */
@@ -49,6 +138,7 @@ NEOBRUTALISM DESIGN SYSTEM - BASE VARIABLES
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&family=Archivo+Black&display=swap');
 
 :root {{
+    --sidebar-width: 350px;
     /* Spacing scale — modular 8px base, used consistently across all components */
     --space-1: 8px;
     --space-2: 16px;
@@ -376,20 +466,46 @@ h1, h2, h3, h4, h5, h6 {{
 5. MANUAL EDIT MODE OVERRIDES
 ==================================================================== 
 */
-.q-textarea .q-field__native {{
+/* Clean input and textarea styling without pink focus frame */
+.q-field--outlined .q-field__control:before,
+.q-field--outlined .q-field__control:after,
+.q-field--focused .q-field__control:before,
+.q-field--focused .q-field__control:after {{
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+}}
+
+.q-field--outlined .q-field__control {{
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}}
+
+.q-textarea .q-field__native,
+.q-input .q-field__native {{
     border: var(--neo-border) !important;
     border-radius: 0px !important;
     box-shadow: 3px 3px 0px 0px var(--neo-black) !important;
     background-color: var(--neo-white) !important;
     font-family: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'Hack Nerd Font', 'Roboto Mono', Consolas, monospace !important;
     color: var(--neo-black) !important;
-    padding: 12px !important;
-    transition: transform 0.1s, box-shadow 0.1s !important;
-}}
-.q-textarea .q-field__native:focus {{
-    transform: translate(1px, 1px) !important;
-    box-shadow: 2px 2px 0px 0px var(--neo-black) !important;
+    padding: 10px 12px !important;
     outline: none !important;
+}}
+
+.q-textarea .q-field__native:focus,
+.q-input .q-field__native:focus {{
+    outline: none !important;
+    box-shadow: 4px 4px 0px 0px var(--neo-black) !important;
+    border-color: var(--neo-black) !important;
+}}
+
+input:focus,
+textarea:focus,
+select:focus {{
+    outline: none !important;
+    box-shadow: none !important;
 }}
 [data-testid="stCodeBlock"] {{
     border: var(--neo-border) !important;
@@ -578,6 +694,25 @@ section[data-testid="stSidebar"],
     border: 3px solid var(--neo-black) !important;
     box-shadow: 3px 3px 0px 0px var(--neo-black) !important;
     transform: translate(-1px, -1px) !important;
+}}
+
+/* Lazy File Tree in Sidebar */
+.q-drawer .lazy-file-tree .q-tree__node-header {{
+    border-radius: 0px !important;
+    padding: 3px 6px !important;
+    margin: 1px 0 !important;
+    transition: background-color 0.1s ease !important;
+}}
+
+.q-drawer .lazy-file-tree .q-tree__node-header:hover {{
+    background-color: #efefef !important;
+}}
+
+.q-drawer .lazy-file-tree .q-tree__node--selected > .q-tree__node-header {{
+    background-color: var(--neo-pink) !important;
+    border: 2px solid var(--neo-black) !important;
+    box-shadow: 2px 2px 0px 0px var(--neo-black) !important;
+    color: var(--neo-black) !important;
 }}
 
 /* 
@@ -1311,4 +1446,459 @@ body.is-dragging .list-uploader-overlay {{
 }}
 
 </style>
+<script>
+(function() {{
+    function initSidebarResizer() {{
+        if (window.__sidebarResizerInitialized) return;
+        window.__sidebarResizerInitialized = true;
+
+        const STORAGE_KEY = 'revivo_sidebar_width';
+        const DEFAULT_WIDTH = 350;
+        const MIN_WIDTH = 240;
+        const MAX_RATIO = 0.65;
+
+        function getClampedWidth(w) {{
+            const maxW = Math.max(MIN_WIDTH, Math.min(800, window.innerWidth * MAX_RATIO));
+            return Math.max(MIN_WIDTH, Math.min(w, maxW));
+        }}
+
+        function applyWidth(w, save = true) {{
+            const clamped = getClampedWidth(w);
+            document.documentElement.style.setProperty('--sidebar-width', clamped + 'px');
+            
+            const drawer = document.querySelector('.q-drawer--left');
+            if (drawer) {{
+                drawer.style.width = clamped + 'px';
+            }}
+            
+            const pageContainer = document.querySelector('.q-page-container');
+            if (pageContainer) {{
+                const isClosed = !drawer || drawer.classList.contains('hidden') || drawer.getAttribute('aria-hidden') === 'true' || drawer.style.display === 'none';
+                if (!isClosed) {{
+                    pageContainer.style.paddingLeft = clamped + 'px';
+                }} else {{
+                    pageContainer.style.paddingLeft = '0px';
+                }}
+            }}
+            
+            if (save) {{
+                try {{ localStorage.setItem(STORAGE_KEY, clamped); }} catch (e) {{}}
+            }}
+            
+            window.dispatchEvent(new Event('resize'));
+            return clamped;
+        }}
+
+        // Restore saved width on initial load
+        try {{
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {{
+                const parsed = parseInt(saved, 10);
+                if (!isNaN(parsed)) {{
+                    applyWidth(parsed, false);
+                }}
+            }}
+        }} catch (e) {{}}
+
+        // Drag handlers with window capture
+        let isDragging = false;
+        let startX = 0;
+        let startWidth = DEFAULT_WIDTH;
+
+        document.addEventListener('mousedown', function(e) {{
+            const resizer = e.target.closest('.sidebar-resizer');
+            if (!resizer) return;
+            
+            e.preventDefault();
+            e.stopPropagation();
+
+            const drawer = document.querySelector('.q-drawer--left');
+            if (!drawer) return;
+
+            isDragging = true;
+            startX = e.clientX;
+            startWidth = drawer.getBoundingClientRect().width || DEFAULT_WIDTH;
+
+            resizer.classList.add('is-resizing');
+            document.body.classList.add('resizing-sidebar');
+
+            function onMouseMove(ev) {{
+                if (!isDragging) return;
+                const deltaX = ev.clientX - startX;
+                applyWidth(startWidth + deltaX, false);
+            }}
+
+            function onMouseUp(ev) {{
+                if (!isDragging) return;
+                isDragging = false;
+                resizer.classList.remove('is-resizing');
+                document.body.classList.remove('resizing-sidebar');
+                
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+
+                const finalDelta = ev.clientX - startX;
+                applyWidth(startWidth + finalDelta, true);
+            }}
+
+            window.addEventListener('mousemove', onMouseMove, {{ passive: false }});
+            window.addEventListener('mouseup', onMouseUp, {{ passive: false }});
+        }});
+
+        // Double click to reset to default
+        document.addEventListener('dblclick', function(e) {{
+            const resizer = e.target.closest('.sidebar-resizer');
+            if (!resizer) return;
+            e.preventDefault();
+            applyWidth(DEFAULT_WIDTH, true);
+        }});
+
+        // Dynamic mutation observer to re-apply width to new or refreshed drawers
+        const observer = new MutationObserver(() => {{
+            const drawer = document.querySelector('.q-drawer--left');
+            if (drawer) {{
+                const currentVar = getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width');
+                if (currentVar && currentVar.trim() && drawer.style.width !== currentVar.trim()) {{
+                    drawer.style.width = currentVar.trim();
+                }}
+            }}
+        }});
+        observer.observe(document.body, {{ childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] }});
+    }}
+
+    if (document.readyState === 'loading') {{
+        document.addEventListener('DOMContentLoaded', initSidebarResizer);
+    }} else {{
+        initSidebarResizer();
+    }}
+}})();
+</script>
+
+<style>
+/* ====================================================================
+   STRUCTURED TERMINAL  —  btop / GoogleTest aesthetic
+   Pure ASCII, monospace, pipe-delimited columns, zero decorations.
+   ==================================================================== */
+
+/* Font stack — consistent monospace hierarchy */
+.st-root,
+.st-root * {{
+    font-family: 'Fira Code', 'JetBrains Mono', 'Consolas', 'Cascadia Code', monospace !important;
+    box-sizing: border-box;
+}}
+
+/* Root container */
+.st-root {{
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    color: #e4e4e7;
+    font-size: 12px;
+    line-height: 1;
+    overflow: hidden;
+    border: 1px solid #1e1e1e;
+    --st-fg: #e4e4e7;
+    --st-dim: #71717a;
+    --st-run: #61afef;
+    --st-pass: #4ade80;
+    --st-fail: #f87171;
+    --st-warn: #fbbf24;
+}}
+
+/* ── Toolbar ─────────────────────────────────────────────────────── */
+.st-toolbar {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    background: #0a0a0a;
+    border-bottom: 1px solid #1e1e1e;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    min-height: 36px;
+}}
+
+.st-toolbar-left {{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}}
+
+.st-toolbar-filters {{
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex: 1;
+    overflow-x: auto;
+    scrollbar-width: none;
+}}
+.st-toolbar-filters::-webkit-scrollbar {{ display: none; }}
+
+.st-toolbar-right {{
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}}
+
+/* Live/idle indicator dot */
+.st-dot {{
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}}
+.st-dot--live  {{ background: #3ddc84; animation: stPulse 1s ease-in-out infinite; }}
+.st-dot--idle  {{ background: #404040; }}
+
+@keyframes stPulse {{
+    0%, 100% {{ opacity: 1; }}
+    50%       {{ opacity: 0.3; }}
+}}
+
+.st-title {{
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    font-size: 13px;
+    color: var(--st-fg);
+    text-transform: uppercase;
+}}
+
+.st-count {{
+    font-size: 13px;
+    color: var(--st-dim);
+}}
+
+/* Source filter buttons */
+.st-filter-btn {{
+    background: #050505;
+    border: 1px solid #3a3a3a;
+    color: var(--st-fg);
+    font-size: 13px;
+    font-family: inherit;
+    padding: 4px 9px;
+    cursor: pointer;
+    transition: color 0.1s, border-color 0.1s;
+    white-space: nowrap;
+    border-radius: 0 !important;
+}}
+.st-filter-btn:hover {{ color: #ffffff; border-color: #5a5a5a; background: #101010; }}
+.st-filter-btn--active {{ color: #ffffff; border-color: #808080; background: #151515; }}
+
+/* Level select + search */
+.st-select {{
+    background: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    color: #808080;
+    font-size: 10px;
+    font-family: inherit;
+    padding: 1px 4px;
+    outline: none;
+    cursor: pointer;
+    border-radius: 0 !important;
+}}
+.st-select:focus {{ border-color: #484848; }}
+
+.st-search {{
+    background: #0a0a0a;
+    border: 1px solid #2a2a2a;
+    color: #c8c8c8;
+    font-size: 11px;
+    font-family: inherit;
+    padding: 1px 6px;
+    width: 100px;
+    outline: none;
+    border-radius: 0 !important;
+    transition: width 0.15s;
+}}
+.st-search:focus {{ border-color: #484848; width: 140px; }}
+.st-search::placeholder {{ color: #3a3a3a; }}
+
+/* Icon buttons */
+.st-btn {{
+    background: transparent;
+    border: 1px solid #2a2a2a;
+    color: #505050;
+    font-size: 11px;
+    font-family: inherit;
+    padding: 1px 5px;
+    cursor: pointer;
+    border-radius: 0 !important;
+    transition: color 0.1s, border-color 0.1s;
+    line-height: 1.5;
+}}
+.st-btn:hover {{ color: #a0a0a0; border-color: #484848; }}
+.st-btn--active {{ color: #3ddc84; border-color: #3ddc84; }}
+.st-btn--jump {{
+    background: #111;
+    color: #a0a0a0;
+    font-size: 10px;
+    border-color: #3a3a3a;
+}}
+
+/* ── Column header ──────────────────────────────────────────────── */
+.st-colheader {{
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    background: #0a0a0a;
+    border-bottom: 1px solid #2a2a2a;
+    border-left: 2px solid transparent;
+    color: var(--st-dim);
+    font-family: 'Fira Code', 'JetBrains Mono', 'Consolas', 'Cascadia Code', monospace !important;
+    font-size: 12px;
+    line-height: 28px;
+    letter-spacing: normal;
+    flex-shrink: 0;
+    white-space: pre;
+    height: 28px;
+    box-sizing: border-box;
+}}
+
+/* ── Row layout (all rows share the same column grid) ──────────── */
+.st-row {{
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    cursor: default;
+    white-space: nowrap;
+    overflow: hidden;
+    border-left: 2px solid transparent;
+    font-family: 'Fira Code', 'JetBrains Mono', 'Consolas', 'Cascadia Code', monospace !important;
+    font-size: 12px;
+    letter-spacing: normal;
+    box-sizing: border-box;
+    transition: background 0.05s;
+}}
+.st-row:hover {{ background: #080808; }}
+
+/* Left-border accent on error/warn rows only */
+.st-row--fail {{ border-left-color: #7a1010; }}
+.st-row--warn {{ border-left-color: #6a4a00; }}
+
+/* Fixed-width columns using ch (character width) in monospace for 100% exact alignment */
+.st-col-ts   {{ width: 8.5ch;  min-width: 8.5ch;  max-width: 8.5ch;  flex-shrink: 0; display: inline-block; white-space: pre; overflow: hidden; }}
+.st-col-src  {{ width: 7ch;    min-width: 7ch;    max-width: 7ch;    flex-shrink: 0; display: inline-block; white-space: pre; overflow: hidden; }}
+.st-col-stat {{ width: 5ch;    min-width: 5ch;    max-width: 5ch;    flex-shrink: 0; display: inline-block; font-weight: 700; white-space: pre; overflow: hidden; }}
+.st-col-msg  {{ flex: 1 1 0%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+
+.st-sep {{
+    width: 3ch;
+    min-width: 3ch;
+    max-width: 3ch;
+    flex-shrink: 0;
+    display: inline-block;
+    text-align: center;
+    white-space: pre;
+    color: var(--st-dim);
+    user-select: none;
+}}
+.st-dim {{ color: var(--st-dim); }}
+
+.st-expand-btn {{
+    flex-shrink: 0;
+    margin-left: 8px;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid #3a3a3a;
+    border-radius: 50%;
+    background: #050505;
+    color: var(--st-fg);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+}}
+.st-expand-btn:hover {{
+    background: #111;
+    border-color: #5a5a5a;
+    color: #ffffff;
+}}
+.st-expand-btn.is-expanded {{
+    border-color: #606060;
+    background: #111;
+}}
+
+/* ── Status column semantic colors (load-bearing, do not remove) ── */
+.st-status--run  {{ color: var(--st-run); }}
+.st-status--pass {{ color: var(--st-pass); }}
+.st-status--fail {{ color: var(--st-fail); font-weight: 700; }}
+.st-status--warn {{ color: var(--st-warn); }}
+.st-status--info {{ color: var(--st-run); }}
+
+/* ── Expanded traceback block ──────────────────────────────────── */
+.st-trace-row {{
+    display: flex;
+    flex-direction: column;
+    background: #000;
+    border-left: 2px solid #1e1e1e;
+    overflow: hidden;
+}}
+
+.st-trace-inner {{
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 4px 8px 4px 72px;   /* indent aligns with message column */
+    overflow: hidden;
+}}
+
+.st-trace-header {{
+    font-size: 11px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    padding-bottom: 3px;
+    border-bottom: 1px solid #1a1a1a;
+    flex-shrink: 0;
+}}
+
+.st-trace-pre {{
+    margin: 0;
+    padding: 0;
+    font-family: inherit !important;
+    font-size: 11px;
+    color: var(--st-dim);
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: auto;
+    white-space: pre;
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a2a #000;
+    line-height: 1.45;
+}}
+.st-trace-pre::-webkit-scrollbar {{ width: 5px; height: 5px; }}
+.st-trace-pre::-webkit-scrollbar-track {{ background: #000; }}
+.st-trace-pre::-webkit-scrollbar-thumb {{ background: #2a2a2a; }}
+
+/* ── Empty state ─────────────────────────────────────────────────── */
+.st-empty {{
+    position: absolute;
+    inset: 60px 0 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #2a2a2a;
+    font-size: 11px;
+    pointer-events: none;
+    font-style: italic;
+}}
+
+/* ── Jump-to-bottom strip ────────────────────────────────────────── */
+.st-jump {{
+    display: flex;
+    justify-content: center;
+    padding: 3px;
+    background: #060606;
+    border-top: 1px solid #1a1a1a;
+    flex-shrink: 0;
+}}
+</style>
 """
+

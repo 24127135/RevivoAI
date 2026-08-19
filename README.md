@@ -135,13 +135,24 @@ The AI engine defaults to a strict python_modernizer persona. The global refacto
 │   └── database.py
 ├── frontend/              # UI components, Monaco editor, and styling
 │   ├── components.py
-│   ├── monaco_editor.py
-│   ├── monaco_editor.js
-│   └── styles.py
+│   ├── file_tree.py       # Custom NiceGUI component for hierarchical lazy file tree
+│   ├── file_tree.js       # Vue 3 component with ephemeral UI state & search filter
+│   ├── monaco_editor.py   # Monaco editor NiceGUI Element with debounced event binding
+│   ├── monaco_editor.js   # Vue 3 Monaco wrapper with 1000ms debouncing & diff support
+│   ├── monaco_workers/    # Same-origin proxy scripts for Monaco Web Workers
+│   │   ├── css.worker.js
+│   │   ├── editor.worker.js
+│   │   ├── json.worker.js
+│   │   └── ts.worker.js
+│   ├── structured_terminal.py  # Structured terminal NiceGUI Element with delta log push
+│   ├── structured_terminal.js  # Vue 3 btop-inspired terminal with q-virtual-scroll
+│   └── styles.py          # Neo-brutalist design system & Quasar overrides
 ├── revivo_workspace/      # Legacy parser and type-sorting utilities
 ├── sql/                   # SQL seeds and execution log references
-├── tests/                 # Pytest suite
-├── test_scripts/          # helper scripts used during development
+├── tests/                 # Comprehensive pytest test suite (138 tests)
+│   ├── backend/
+│   └── frontend/
+├── test_scripts/          # Real modernization test cases (Global State, God Func, Async)
 └── tmp/                   # Temporary workspace for local experiments
 ```
 
