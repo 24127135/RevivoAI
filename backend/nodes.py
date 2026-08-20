@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Protocol
-import re
 
 from backend.models import ProjectFile
 from backend.personas import get_persona
@@ -17,6 +17,42 @@ if TYPE_CHECKING:
 
 class _LLMClient(Protocol):
     def generate(self, prompt: str) -> str: ...
+
+
+def validate_patch_imports(code_string: str) -> tuple[bool, list[str]]:
+    """
+    Validates that the patch only imports from the standard library 
+    or the designated whitelist.
+    Returns (is_valid, list_of_forbidden_imports).
+    """
+    ALLOWED_PACKAGES = {
+        "python"
+    }
+
+    try:
+        tree = ast.parse(code_string)
+    except SyntaxError:
+        # If it's a syntax error, let the sandbox catch it so it can feed the exact line number back
+        return True, []  
+
+    std_libs = sys.stdlib_module_names if hasattr(sys, 'stdlib_module_names') else set()
+    forbidden = []
+
+    for node in ast.walk(tree):
+        base_mod = None
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                base_mod = alias.name.split('.')[0]
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                base_mod = node.module.split('.')[0]
+
+        if base_mod and base_mod not in std_libs and base_mod not in ALLOWED_PACKAGES:
+            # Ignore local relative imports (e.g. from .utils import x)
+            if not base_mod.startswith('.'):
+                forbidden.append(base_mod)
+
+    return (len(forbidden) == 0, forbidden)
 
 
 class ASTParserNode:
@@ -225,6 +261,24 @@ class LLMPatchNode:
                 else:
                     # If no fenced block, use the full CODE section
                     code_text = code_section.strip() + "\n"
+
+                # --- AST VALIDATION INTERCEPT ---
+                is_valid, forbidden_modules = validate_patch_imports(code_text)
+                if not is_valid:
+                    error_msg = f"Forbidden imports detected: {', '.join(forbidden_modules)}. You must strictly use the standard library or allowed packages."
+                    
+                    # Create a "Poison Pill" script that forces the Docker sandbox to instantly fail 
+                    # and spit our error back into the traceback loop!
+                    poison_pill_code = f"import sys\nprint('{error_msg}', file=sys.stderr)\nsys.exit(1)"
+                    
+                    return {
+                        "status": "FAILED", 
+                        "patched_code": poison_pill_code,  # <--- FIX: Overwrites the state so Docker runs the crash script
+                        "traceback_log": error_msg,
+                        "docker_exit_code": 1,
+                        "raw": raw,
+                    }
+                # ------------------------------------
 
                 return {
                     "patched_code": code_text,

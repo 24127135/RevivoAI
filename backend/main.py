@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 
 from backend.models import ProjectFile
 from backend.orchestrator import orchestrator_app
 from backend.websocket import manager
 
 app = FastAPI(title="RevivoAI Backend")
+
+# ---------------------------------------------------------------------------
+# Static files — Monaco Web Worker proxy scripts
+# ---------------------------------------------------------------------------
+# Worker scripts are fetched by the browser as same-origin URLs
+# (/monaco-workers/editor.worker.js, etc.) which satisfies the browser's
+# "same-origin or CORS" constraint for Web Workers.  Each proxy script in
+# frontend/monaco_workers/ calls importScripts() to load the real Monaco
+# worker bundle from the CDN inside the worker scope.
+_WORKERS_DIR = Path(__file__).parent.parent / "frontend" / "monaco_workers"
+app.mount("/monaco-workers", StaticFiles(directory=str(_WORKERS_DIR)), name="monaco-workers")
 
 
 @app.websocket("/ws/{session_id}")

@@ -1,5 +1,6 @@
 import os
 import uuid
+from pathlib import Path
 from typing import List, Any
 from .models import ProjectFile, FileStatus
 
@@ -72,3 +73,59 @@ def import_local_project(root_path: str) -> List[ProjectFile]:
                 language=_guess_lang(f)
             ))
     return files
+
+
+IGNORE_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".idea", ".vscode", "node_modules", ".agents"}
+
+def get_directory_children(dir_path: str, base_root: str | None = None) -> list[dict]:
+    """
+    Returns only the DIRECT children (files and immediate subfolders) of a directory
+    for lazy-loaded tree rendering. Subfolders are flagged with lazy=True and children=[].
+    """
+    if not os.path.isdir(dir_path):
+        return []
+
+    root_for_rel = Path(base_root).resolve() if base_root and os.path.isdir(base_root) else Path(dir_path).resolve()
+    entries: list[dict] = []
+    
+    try:
+        with os.scandir(dir_path) as it:
+            for entry in it:
+                name = entry.name
+                if name.startswith(".") or name in IGNORE_DIRS:
+                    continue
+
+                full_path = Path(entry.path).resolve().as_posix()
+                rel_path = os.path.relpath(entry.path, root_for_rel).replace("\\", "/")
+
+                if entry.is_dir(follow_symlinks=False):
+                    entries.append({
+                        "id": full_path,
+                        "label": name,
+                        "path": full_path,
+                        "rel_path": rel_path,
+                        "is_dir": True,
+                        "lazy": True,
+                        "children": [],
+                    })
+                elif entry.is_file(follow_symlinks=False):
+                    ext = name.split(".")[-1].lower() if "." in name else ""
+                    entries.append({
+                        "id": full_path,
+                        "label": name,
+                        "path": full_path,
+                        "rel_path": rel_path,
+                        "is_dir": False,
+                        "lazy": False,
+                        "ext": ext,
+                    })
+    except (PermissionError, OSError):
+        return []
+
+    # Sort: directories first (A-Z), then files (A-Z)
+    entries.sort(key=lambda x: (not x["is_dir"], x["label"].lower()))
+    return entries
+
+def get_root_nodes(root_path: str) -> list[dict]:
+    """Returns the top-level nodes for a given project/workspace root."""
+    return get_directory_children(root_path, base_root=root_path)

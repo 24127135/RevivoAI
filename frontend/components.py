@@ -8,6 +8,9 @@ All Pygments-based code viewer and diff-table rendering has been removed
 and replaced with Monaco Editor (see frontend/monaco_editor.py).
 """
 
+from frontend.file_tree import LazyFileTree
+from frontend.structured_terminal import StructuredTerminal
+
 TRANSLATING_PHASES = {
     "systems_engineer": [
         "Parsing abstract syntax tree of legacy source (FR-2.1)",

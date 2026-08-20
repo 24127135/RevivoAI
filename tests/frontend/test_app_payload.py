@@ -50,6 +50,35 @@ def test_build_orchestrator_payload_includes_workspace_and_file_context(tmp_path
         app_module.state.session_id = None
 
 
+def test_build_orchestrator_payload_includes_user_feedback(tmp_path):
+    source_file = tmp_path / "calc.py"
+    source_file.write_text("def add(a, b): return a - b\n", encoding="utf-8")
+
+    project_file = ProjectFile(
+        file_id="calc-1",
+        path=str(source_file),
+        legacy_source="def add(a, b): return a - b\n",
+        ai_source="",
+        status=FileStatus.FAILED,
+        language="python",
+    )
+
+    original_files = app_module.state.files
+    original_feedback = app_module.state.user_feedback
+
+    try:
+        app_module.state.files = {project_file.file_id: project_file}
+        app_module.state.user_feedback = {"calc-1": "Use addition + instead of subtraction -"}
+
+        payload = app_module.build_orchestrator_payload("calc-1")
+
+        assert "USER FEEDBACK / INSTRUCTIONS FOR PATCH REFACTORING:" in payload["system_prompt"]
+        assert "Use addition + instead of subtraction -" in payload["system_prompt"]
+    finally:
+        app_module.state.files = original_files
+        app_module.state.user_feedback = original_feedback
+
+
 def test_get_staging_summary_counts_sums_statuses():
     original_staging_files = app_module.state.staging_files
 
@@ -69,6 +98,21 @@ def test_get_staging_summary_counts_sums_statuses():
         }
     finally:
         app_module.state.staging_files = original_staging_files
+
+
+@pytest.mark.asyncio
+async def test_load_demo_project_loads_test_scripts():
+    original_files = app_module.state.files
+    original_root = app_module.state.project_root
+    try:
+        app_module.state.files = {}
+        await app_module.load_demo_project()
+        assert len(app_module.state.files) >= 3
+        file_paths = [f.path for f in app_module.state.files.values()]
+        assert any("01_Global_State_Encapsulation.py" in p for p in file_paths)
+    finally:
+        app_module.state.files = original_files
+        app_module.state.project_root = original_root
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")

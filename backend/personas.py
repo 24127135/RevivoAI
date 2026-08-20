@@ -7,6 +7,16 @@ retaining domain-specific guidance.
 
 from typing import Dict
 
+ALLOWED_PACKAGES = [
+    "requests", "pydantic", "numpy", "pandas", 
+    "pytest", "fastapi", "httpx", "transformers", "torch"
+]
+
+ENVIRONMENT_RESTRICTION = (
+    "### ENVIRONMENT RESTRICTIONS\n"
+    f"1. You may ONLY import from the Python Standard Library or these installed packages: {', '.join(ALLOWED_PACKAGES)}.\n"
+    "2. DO NOT import any other third-party modules. If another tool is needed, write it in pure Python.\n"
+)
 
 REFACTORING_DIRECTIVE = (
     "### GLOBAL REFACTORING DIRECTIVE\n"
@@ -55,10 +65,14 @@ DOMAIN_PROMPTS: Dict[str, str] = {
 }
 
 
-def get_persona(key: str) -> str:
+def get_persona(key: str, restrict_environment: bool = True) -> str:
     """Compose the global directive with the domain prompt for `key`.
 
     Falls back to the python_modernizer role if the key is not found.
     """
     domain = DOMAIN_PROMPTS.get(key, DOMAIN_PROMPTS["python_modernizer"])
-    return f"{REFACTORING_DIRECTIVE}\n\n{domain}"
+    
+    # Dynamically inject the environment boundaries if required
+    env_prompt = f"\n\n{ENVIRONMENT_RESTRICTION}" if restrict_environment else ""
+    
+    return f"{REFACTORING_DIRECTIVE}{env_prompt}\n\n{domain}"
