@@ -36,4 +36,5 @@ dev = [
 pythonpath = ["."]
 filterwarnings = [
     "ignore:.*'_UnionGenericAlias' is deprecated.*:DeprecationWarning:google.genai.*",
+    "ignore::DeprecationWarning:supabase.*:"
 ]

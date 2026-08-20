@@ -9,6 +9,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
+from typing import Union, Any, Optional
 
 import httpx
 import websockets
@@ -185,10 +186,6 @@ async def commit_staging_to_workspace():
     except Exception as e:
         logger.warning(f"Could not initialize remote session: {e}")
     refresh_all()
-    try:
-        render_sidebar.refresh()
-    except Exception:
-        pass
 
 async def pick_directory_async():
     def pick():
@@ -733,7 +730,7 @@ def set_active_buffer(file_id: str):
     state.active_buffer = file_id
     state.fullscreen_mode = None
     try:
-        render_main.refresh()
+        background_tasks.create(render_main.refresh())
     except Exception:
         pass
 
@@ -858,6 +855,7 @@ def open_retest_dialog(file_id: str):
                 fb_text = (feedback_input.value or "").strip()
                 state.user_feedback[file_id] = fb_text
                 retest_dialog.close()
+                f.iteration = 0
                 if fb_text:
                     push_log(file_id, f"[User Feedback] Developer note: {fb_text}")
                 else:
@@ -882,6 +880,7 @@ def save_and_retest(file_id: str, widget_value: str):
     state.edit_buffer[file_id] = widget_value
     f.ai_source = widget_value
     state.diff_state[file_id] = "readonly"
+    f.iteration = 0
     push_log(file_id, "[User Action] Manual patch edit submitted. Restarting execution...")
     state.is_thinking = True 
     asyncio.create_task(simulate_sandbox(file_id))
@@ -899,12 +898,14 @@ def refresh_all():
         pass
 
     try:
-        render_sidebar.refresh()
+        res = render_sidebar.refresh()
+        if hasattr(res, '__await__'): background_tasks.create(res)
     except Exception:
         pass
 
     try:
-        render_main.refresh()
+        res = render_main.refresh()
+        if hasattr(res, '__await__'): background_tasks.create(res)
     except Exception:
         pass
 
@@ -1066,13 +1067,17 @@ async def websocket_listener(session_id: str):
 
                 if status_changed:
                     try:
-                        render_sidebar.refresh()
+                        res = render_sidebar.refresh()
+                        if hasattr(res, '__await__'):
+                            await res
                     except Exception:
                         pass
 
                 if status_changed or phase_changed or thinking_changed or agent_state_changed:
                     try:
-                        render_main.refresh()
+                        res = render_main.refresh()
+                        if hasattr(res, '__await__'):
+                            await res
                     except Exception:
                         pass
     except Exception as exc:
@@ -1159,7 +1164,7 @@ def run_translation_simulation(file_id: str):
 
     try:
         render_sidebar.refresh()
-        render_main.refresh()
+        background_tasks.create(render_main.refresh())
     except Exception:
         pass
 
@@ -1919,7 +1924,7 @@ def render_main():
 
         def _close_expand():
             state.fullscreen_mode = None
-            render_main.refresh()
+            background_tasks.create(render_main.refresh())
 
         with ui.element('div').classes('fixed z-40 bg-[#1e1e1e]').style(
             'top:0; right:0; bottom:0; left:var(--sidebar-width, 350px); overflow:hidden;'
@@ -2015,7 +2020,7 @@ def render_main():
                 </div>
                 ''')
                 with ui.row().classes('items-center gap-2 flex-shrink-0'):
-                    ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'source'), render_main.refresh())) \
+                    ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'source'), background_tasks.create(render_main.refresh()))) \
                         .props('size=sm') \
                         .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-gray-100 transition-all cursor-pointer')
             MonacoEditor(
@@ -2099,7 +2104,7 @@ def render_main():
                             .props('size=sm') \
                             .classes('bg-black text-white font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-[#22c55e] hover:text-black transition-all cursor-pointer')
 
-                        ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'edit'), render_main.refresh())) \
+                        ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'edit'), background_tasks.create(render_main.refresh()))) \
                             .props('size=sm') \
                             .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-gray-100 transition-all cursor-pointer')
 
@@ -2134,7 +2139,7 @@ def render_main():
                     </div>
                     ''')
                     with ui.row().classes('items-center gap-2 flex-shrink-0'):
-                        ui.button('Edit', icon='edit', on_click=lambda: (start_edit(active_id), render_main.refresh())) \
+                        ui.button('Edit', icon='edit', on_click=lambda: (start_edit(active_id), background_tasks.create(render_main.refresh()))) \
                             .props('size=sm') \
                             .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-[#ff5fd1] hover:text-white transition-all cursor-pointer')
 
@@ -2142,7 +2147,7 @@ def render_main():
                             .props('size=sm') \
                             .classes('bg-black text-white font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-[#22c55e] hover:text-black transition-all cursor-pointer')
 
-                        ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'diff'), render_main.refresh())) \
+                        ui.button('Fullscreen', icon='fullscreen', on_click=lambda: (setattr(state, 'fullscreen_mode', 'diff'), background_tasks.create(render_main.refresh()))) \
                             .props('size=sm') \
                             .classes('bg-white text-black font-mono font-black text-xs px-3.5 py-1.5 border-2 border-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:bg-gray-100 transition-all cursor-pointer')
 
@@ -2162,10 +2167,10 @@ def render_main():
             show_full = state.show_full_trace.get(active_id, False)
             with ui.row().classes('w-full justify-end mt-[-1rem] mb-2 gap-2'):
                 if f.status == FileStatus.FAILED and diff_state_val != "editing":
-                    ui.button("Edit AI code", icon='edit', on_click=lambda: (start_edit(active_id), render_main.refresh())).props('color=blue size=sm').classes('w-44 font-bold')
+                    ui.button("Edit AI code", icon='edit', on_click=lambda: (start_edit(active_id), background_tasks.create(render_main.refresh()))).props('color=blue size=sm').classes('w-44 font-bold')
                 
                 btn_label = "Collapse trace" if show_full else "Show full trace"
-                ui.button(btn_label, on_click=lambda: (state.show_full_trace.update({active_id: not show_full}), render_main.refresh())).props('color=blue size=sm').classes('w-44 font-bold')
+                ui.button(btn_label, on_click=lambda: (state.show_full_trace.update({active_id: not show_full}), background_tasks.create(render_main.refresh()))).props('color=blue size=sm').classes('w-44 font-bold')
 
             with ui.column().classes('w-full neo-card p-0 mb-6'):
                 ui.html("""
@@ -2194,7 +2199,7 @@ def render_main():
                             else:
                                 with ui.row().classes('w-full items-center justify-between'):
                                     ui.html(f'<div class="trace-noise-row m-0 p-0">{label}</div>')
-                                    ui.button("Expand", on_click=lambda k=key: (state.trace_expanded.update({k: True}), render_main.refresh())).props('flat size=sm text-color=gray-600')
+                                    ui.button("Expand", on_click=lambda k=key: (state.trace_expanded.update({k: True}), background_tasks.create(render_main.refresh()))).props('flat size=sm text-color=gray-600')
                                 
                                 if state.trace_expanded.get(key, False):
                                     for nf in group["frames"]: 
