@@ -214,9 +214,6 @@ The Model Context Protocol client validates all filesystem paths against a confi
 │   ├── structured_terminal.py  # Structured terminal NiceGUI element with delta log push
 │   ├── structured_terminal.js  # Vue 3 btop-inspired terminal with q-virtual-scroll
 │   └── styles.py          # Neo-brutalist design system & Quasar overrides (~1900 lines)
-├── revivo_workspace/      # Sample sandbox test scripts
-│   ├── 01_legacy_parser.py    # File processing with inline tests
-│   └── 02_type_sorter.py     # Mixed-type dictionary sorting with inline tests
 ├── sql/                   # Database schema
 │   └── execution_logs.sql # execution_logs table DDL (UUID PK, session FK, JSONB metadata)
 ├── tests/                 # Comprehensive pytest test suite (138 tests)
