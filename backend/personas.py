@@ -49,28 +49,40 @@ REFACTORING_DIRECTIVE = (
 
 
 DOMAIN_PROMPTS: Dict[str, str] = {
-    "systems": (
-        "ROLE: Kernel Systems Engineer. DOMAIN: xv6. RULES: Use `bread`, `bwrite`, `bmap`. Bound check `BSIZE`."
-    ),
-    "data_science": (
-        "ROLE: Data Science Engineer. DOMAIN: Scikit-Learn/HuggingFace. RULES: Use Pipelines. Vectorize."
+    "general": (
+        "ROLE: General Code Assistant. DOMAIN: Standard Python. "
+        "RULES: Write clean, readable, and maintainable code. Follow standard PEP-8 conventions. "
+        "Fix the runtime error without overcomplicating the architecture."
     ),
     "python_modernizer": (
         "ROLE: Senior Python Refactoring Engineer. DOMAIN: Legacy Python codebases. "
-        "RULES: Aggressively update syntax to modern Python 3 standards. "
+        "RULES: Aggressively update syntax to modern Python 3.10+ standards. "
         "Replace all string concatenation with f-strings. "
         "Eliminate `range(len())` loops in favor of direct iteration or `enumerate()`. "
-        "Implement context managers for all I/O operations. Add PEP 484 type hints."
+        "Use walrus operators (`:=`) and list comprehensions where applicable. Add PEP 484 type hints."
+    ),
+    "strict_refactor": (
+        "ROLE: Strict Architect. DOMAIN: Core business logic. "
+        "RULES: DO NOT alter the underlying algorithm or business logic. "
+        "Focus purely on structural cleanup (DRY principles). "
+        "Extract long methods into smaller, descriptive helper functions. "
+        "You MUST include Google-style docstrings for every function."
+    ),
+    "security_auditor": (
+        "ROLE: Security & Reliability Auditor. DOMAIN: High-availability systems. "
+        "RULES: Prioritize safety over performance. "
+        "You MUST wrap all file, network, and unpredictable I/O operations in explicit try/except blocks. "
+        "You MUST validate all function arguments before using them. "
+        "Do not leave bare `except:` blocks; always catch specific exceptions."
     )
 }
-
 
 def get_persona(key: str, restrict_environment: bool = True) -> str:
     """Compose the global directive with the domain prompt for `key`.
 
-    Falls back to the python_modernizer role if the key is not found.
+    Falls back to the general role if the key is not found.
     """
-    domain = DOMAIN_PROMPTS.get(key, DOMAIN_PROMPTS["python_modernizer"])
+    domain = DOMAIN_PROMPTS.get(key, DOMAIN_PROMPTS["general"])
     
     # Dynamically inject the environment boundaries if required
     env_prompt = f"\n\n{ENVIRONMENT_RESTRICTION}" if restrict_environment else ""

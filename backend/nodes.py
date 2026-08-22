@@ -25,9 +25,7 @@ def validate_patch_imports(code_string: str) -> tuple[bool, list[str]]:
     or the designated whitelist.
     Returns (is_valid, list_of_forbidden_imports).
     """
-    ALLOWED_PACKAGES = {
-        "python"
-    }
+    ALLOWED_PACKAGES = set()  # Add any additional allowed packages here
 
     try:
         tree = ast.parse(code_string)

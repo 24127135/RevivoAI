@@ -916,15 +916,15 @@ def build_orchestrator_payload(file_id: str) -> dict:
     f_dict['status'] = f.status.value if hasattr(f.status, 'value') else f.status
     
     feedback = state.user_feedback.get(file_id, "").strip()
-    system_prompt = f"USER FEEDBACK / INSTRUCTIONS FOR PATCH REFACTORING:\n{feedback}\n" if feedback else ""
+    user_feedback_prompt = f"USER FEEDBACK / INSTRUCTIONS FOR PATCH REFACTORING:\n{feedback}\n" if feedback else ""
 
     return {
         "session_id": state.session_id,
         "target_file": f_dict,
         "file_path": f.path,
         "workspace_dir": state.project_root,
-        "system_prompt": system_prompt,
-        "persona": f.persona,
+        "system_prompt": user_feedback_prompt,
+        "persona": getattr(state, 'active_persona', 'general'),
         "patched_code": "",
         "iteration_count": 0,
         "max_iterations": int(state.max_iterations) if state.max_iterations is not None else 3,
@@ -1606,15 +1606,37 @@ def render_welcome():
 # SIDEBAR
 # ============================================================================
 def open_settings_dialog():
-    with ui.dialog() as settings_dialog, ui.card().classes('w-[400px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white'):
+    # --- PRE-FILL THE UI WITH THE SAVED KEY ---
+    if not getattr(state, 'api_key', ''):
+        import os
+        from pathlib import Path
+        existing_key = os.getenv("GEMINI_API_KEY", "")
+        if not existing_key:
+            try:
+                env_path = Path(__file__).resolve().parent / ".env"
+                if env_path.exists():
+                    with open(env_path, 'r') as f:
+                        for line in f:
+                            if line.startswith("GEMINI_API_KEY="):
+                                existing_key = line.split("=", 1)[1].strip()
+                                break
+            except Exception:
+                pass
+        state.api_key = existing_key
+
+    # Initialize the persona state if it doesn't exist yet so bind_value can attach to it
+    if not hasattr(state, 'active_persona'):
+        state.active_persona = 'general'
+
+    with ui.dialog() as settings_dialog, ui.card().classes('w-[420px] border-4 border-black shadow-[8px_8px_0_0_rgba(0,0,0,1)] p-6 bg-white rounded-none'):
         ui.label('⚙️ SYSTEM SETTINGS').classes('text-xl font-black mb-4 tracking-tight')
         
         # API Key Input
         ui.label('Gemini API Key').classes('text-sm font-bold text-gray-700 uppercase')
         ui.input(placeholder='AIzaSy...', password=True, password_toggle_button=True) \
             .bind_value(state, 'api_key') \
-            .classes('w-full mb-4') \
-            .props('outlined dense')
+            .classes('w-full mb-4 font-mono') \
+            .props('outlined square dense')
         
         # Max Iterations Input
         ui.label('Max Sandbox Iterations').classes('text-sm font-bold text-gray-700 uppercase')
@@ -1623,15 +1645,77 @@ def open_settings_dialog():
                 state.max_iterations = int(e.value) if e.value is not None else 3
             except (ValueError, TypeError):
                 state.max_iterations = 3
-        ui.number(min=1, max=10, step=1, precision=0, format='%d', value=int(state.max_iterations or 3), on_change=_on_max_iter_change) \
-            .classes('w-full mb-6') \
-            .props('outlined dense')
-            
-        with ui.row().classes('w-full justify-end mt-2'):
-            ui.button('Save & Close', on_click=settings_dialog.close) \
+                
+        ui.number(min=1, max=10, step=1, precision=0, format='%d', value=int(getattr(state, 'max_iterations', 3)), on_change=_on_max_iter_change) \
+            .classes('w-full mb-6 font-mono') \
+            .props('outlined square dense')
+
+        # AI Persona Selection
+        ui.label('AI Persona').classes('text-sm font-bold text-gray-700 uppercase mt-2')
+        
+        persona_options = {
+            'general': 'General Assistant', 
+            'python_modernizer': 'Python Modernizer', 
+            'strict_refactor': 'Strict Refactor', 
+            'security_auditor': 'Security Auditor'
+        }
+        
+        with ui.element('div').classes('w-full mb-6 border-[3px] border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)] bg-white'):
+            # FIX: Switched to native bind_value to prevent UI freezing
+            ui.select(
+                options=persona_options, 
+            ).bind_value(state, 'active_persona') \
+             .classes('w-full font-mono font-bold px-3 py-1') \
+             .props(
+                 'borderless dense color=black '
+                 'popup-content-class="font-mono font-bold border-[3px] border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)] rounded-none"'
+             )
+    
+        with ui.row().classes('w-full justify-end mt-4 gap-4'):
+            def save_settings():
+                # --- FIX: Move imports to the very top! ---
+                import os
+                from pathlib import Path
+                # ------------------------------------------
+                
+                key = getattr(state, 'api_key', '')
+                if key and key.strip():
+                    clean_key = key.strip()
+                    os.environ["GEMINI_API_KEY"] = clean_key
+                    
+                    try:
+                        env_path = Path(__file__).resolve().parent / ".env"
+                        env_lines = []
+                        if env_path.exists():
+                            with open(env_path, 'r') as f:
+                                env_lines = f.readlines()
+                        
+                        with open(env_path, 'w') as f:
+                            found = False
+                            for line in env_lines:
+                                if line.startswith("GEMINI_API_KEY="):
+                                    f.write(f"GEMINI_API_KEY={clean_key}\n")
+                                    found = True
+                                else:
+                                    f.write(line)
+                            if not found:
+                                f.write(f"GEMINI_API_KEY={clean_key}\n")
+                    except Exception as e:
+                        ui.notify(f"Key applied, but failed to save to .env: {e}", type="warning")
+                        settings_dialog.close()
+                        return
+
+                    ui.notify("API Key & Settings saved successfully!", type="positive")
+                else:
+                    ui.notify("Please enter a valid API key.", type="warning")
+                    return
+                
+                settings_dialog.close()
+
+            ui.button('Save & Close', on_click=save_settings) \
                 .props('color=black text-color=white unelevated') \
-                .classes('font-bold px-6 py-2 hover:-translate-y-px hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,0.5)] transition-all')
-            
+                .classes('font-black px-6 py-2 rounded-none hover:-translate-y-px shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all cursor-pointer')
+
     settings_dialog.open()
 
 def open_clear_workspace_dialog():

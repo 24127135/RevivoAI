@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -54,5 +55,9 @@ async def run_orchestrator_task(session_id: str, payload: dict):
 
 @app.post("/api/run/{session_id}")
 async def run_orchestrator(session_id: str, payload: dict, background_tasks: BackgroundTasks):
+    api_key = payload.get("api_key")
+    if api_key:
+        os.environ["GEMINI_API_KEY"] = api_key
+
     background_tasks.add_task(run_orchestrator_task, session_id, payload)
     return {"status": "queued", "session_id": session_id}
